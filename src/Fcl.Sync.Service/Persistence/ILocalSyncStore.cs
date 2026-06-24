@@ -1,4 +1,5 @@
 using Fcl.Sync.Service.AccessControl;
+using Fcl.Sync.Service.AccessProviders;
 using Fcl.Sync.Service.GymMaster;
 using Fcl.Sync.Service.Webhooks;
 
@@ -24,7 +25,17 @@ public interface ILocalSyncStore
 
     Task MarkStalePendingAccessCommandsAsync(string reason, CancellationToken cancellationToken);
 
-    Task<long> StartSyncRunAsync(DateTimeOffset startedAt, CancellationToken cancellationToken);
+    Task<IReadOnlySet<string>> GetFreshConfirmedPinsAsync(
+        IReadOnlyDictionary<string, string> desiredHashesByPin,
+        DateTimeOffset freshAfter,
+        CancellationToken cancellationToken);
+
+    Task UpsertZKBioCacheAsync(
+        AccessPersonCommand command,
+        DateTimeOffset observedAt,
+        CancellationToken cancellationToken);
+
+    Task<long> StartSyncRunAsync(SyncRunMode mode, DateTimeOffset startedAt, CancellationToken cancellationToken);
 
     Task CompleteSyncRunAsync(
         long syncRunId,

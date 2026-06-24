@@ -11,4 +11,12 @@ public sealed class ReconciliationOptions
 
     [Range(1, 120)]
     public int AccessProviderTimeoutMinutes { get; init; } = 20;
+
+    [Range(1, 168)]
+    public int FullAuditIntervalHours { get; init; } = 24;
+
+    public bool FullAuditOnStartup { get; init; } = true;
+
+    [Range(1, 168)]
+    public int ZKBioCacheMaxAgeHours { get; init; } = 24;
 }

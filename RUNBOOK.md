@@ -21,6 +21,9 @@ ZKBio__BaseUrl=https://your-zkbio-server
 ZKBio__AccessToken=your-zkbio-token
 ZKBio__AllowInvalidServerCertificate=true
 Reconciliation__AccessProviderTimeoutMinutes=20
+Reconciliation__FullAuditIntervalHours=24
+Reconciliation__FullAuditOnStartup=true
+Reconciliation__ZKBioCacheMaxAgeHours=24
 ```
 
 `GymMaster__PortalMembersUrl` is optional if `GymMaster__SiteName` and `GymMaster__ApiKey` are set. The service will derive:
@@ -59,6 +62,7 @@ It refreshes every 30 seconds and shows:
 
 - members currently stored in SQLite
 - latest sync status, start/completion time, duration, and members checked
+- sync mode: `Fast` or `FullAudit`
 - latest access command outcomes: `Applied`, `Skipped`, `Failed`, or `Pending`
 - recent sync runs
 - recent integration errors
@@ -136,14 +140,32 @@ The production sync order is:
 ```text
 1. Fetch current members from GymMaster Portal API
 2. Save/update members in SQLite
-3. Compute desired access state
-4. Fetch matching people from ZKBio by PIN
-5. Skip people that already match
-6. Create/update missing or changed people through ZKBio API
-7. Record Applied, Skipped, or Failed command status in SQLite
+3. Compute desired access/profile fingerprints
+4. Fast sync: skip members whose latest ZKBio cache fingerprint is still fresh
+5. Full audit: bypass the cache shortcut and force ZKBio confirmation
+6. Fetch matching people from ZKBio by PIN for members that need provider confirmation
+7. Skip people that already match
+8. Create/update missing or changed people through ZKBio API
+9. Update the local ZKBio cache after successful provider confirmation
+10. Record Applied, Skipped, or Failed command status in SQLite
 ```
 
 The service does not delete ZKBio people.
+
+There are two reconciliation modes:
+
+```text
+Fast      - hourly, uses local ZKBio cache fingerprints to avoid unnecessary ZKBio calls
+FullAudit - slower confirmation pass, refreshes the ZKBio cache and guarantees freshness
+```
+
+The full audit cadence is controlled by:
+
+```text
+Reconciliation__FullAuditIntervalHours=24
+Reconciliation__FullAuditOnStartup=true
+Reconciliation__ZKBioCacheMaxAgeHours=24
+```
 
 The access-provider phase has a timeout controlled by:
 

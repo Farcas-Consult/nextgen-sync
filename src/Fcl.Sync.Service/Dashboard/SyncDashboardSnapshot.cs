@@ -14,6 +14,7 @@ public sealed record SyncDashboardSnapshot(
 
 public sealed record SyncRunSummary(
     long Id,
+    string Mode,
     DateTimeOffset StartedAt,
     DateTimeOffset? CompletedAt,
     int MembersChecked,

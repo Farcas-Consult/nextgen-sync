@@ -209,6 +209,7 @@ public static class DashboardEndpoints
         {
             html.AppendLine("<table><tbody>");
             AppendKeyValueRow(html, "Run ID", latest.Id.ToString());
+            AppendKeyValueRow(html, "Mode", latest.Mode);
             AppendKeyValueRow(html, "Status", latest.Status);
             AppendKeyValueRow(html, "Started", FormatTimestamp(latest.StartedAt));
             AppendKeyValueRow(html, "Completed", IsRunning(latest) ? "Running" : FormatTimestamp(latest.CompletedAt!.Value));
@@ -288,10 +289,11 @@ public static class DashboardEndpoints
             return;
         }
 
-        html.AppendLine("<table><thead><tr><th>ID</th><th>Status</th><th>Completed</th><th>Members</th><th>Duration</th></tr></thead><tbody>");
+        html.AppendLine("<table><thead><tr><th>ID</th><th>Mode</th><th>Status</th><th>Completed</th><th>Members</th><th>Duration</th></tr></thead><tbody>");
         foreach (var run in runs)
         {
             html.Append("<tr><td class=\"mono\">").Append(Escape(run.Id.ToString())).Append("</td>");
+            html.Append("<td>").Append(Escape(run.Mode)).Append("</td>");
             html.Append("<td>").Append(Escape(run.Status)).Append("</td>");
             html.Append("<td class=\"mono\">").Append(Escape(IsRunning(run) ? "Running" : FormatTimestamp(run.CompletedAt!.Value))).Append("</td>");
             html.Append("<td class=\"mono\">").Append(Escape(run.MembersChecked.ToString("N0"))).Append("</td>");

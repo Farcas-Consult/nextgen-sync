@@ -1,4 +1,5 @@
 using Fcl.Sync.Service.AccessControl;
+using Fcl.Sync.Service.AccessProviders;
 using Fcl.Sync.Service.GymMaster;
 using Fcl.Sync.Service.Webhooks;
 
@@ -42,10 +43,24 @@ public sealed class InMemoryLocalSyncStore(ILogger<InMemoryLocalSyncStore> logge
         return Task.CompletedTask;
     }
 
-    public Task<long> StartSyncRunAsync(DateTimeOffset startedAt, CancellationToken cancellationToken)
+    public Task<IReadOnlySet<string>> GetFreshConfirmedPinsAsync(
+        IReadOnlyDictionary<string, string> desiredHashesByPin,
+        DateTimeOffset freshAfter,
+        CancellationToken cancellationToken)
+    {
+        return Task.FromResult<IReadOnlySet<string>>(new HashSet<string>());
+    }
+
+    public Task UpsertZKBioCacheAsync(AccessPersonCommand command, DateTimeOffset observedAt, CancellationToken cancellationToken)
+    {
+        logger.LogInformation("Updated ZKBio cache for PIN {Pin}.", command.Pin);
+        return Task.CompletedTask;
+    }
+
+    public Task<long> StartSyncRunAsync(SyncRunMode mode, DateTimeOffset startedAt, CancellationToken cancellationToken)
     {
         var id = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        logger.LogInformation("Started sync run {SyncRunId}.", id);
+        logger.LogInformation("Started {Mode} sync run {SyncRunId}.", mode, id);
         return Task.FromResult(id);
     }
 

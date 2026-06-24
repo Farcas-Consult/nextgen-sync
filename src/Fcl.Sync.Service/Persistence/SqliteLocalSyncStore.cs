@@ -1,6 +1,7 @@
 using System.Data;
 using System.Text.Json;
 using Fcl.Sync.Service.AccessControl;
+using Fcl.Sync.Service.AccessProviders;
 using Fcl.Sync.Service.Dashboard;
 using Fcl.Sync.Service.GymMaster;
 using Fcl.Sync.Service.Webhooks;
@@ -244,18 +245,147 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task<long> StartSyncRunAsync(DateTimeOffset startedAt, CancellationToken cancellationToken)
+    public async Task<IReadOnlySet<string>> GetFreshConfirmedPinsAsync(
+        IReadOnlyDictionary<string, string> desiredHashesByPin,
+        DateTimeOffset freshAfter,
+        CancellationToken cancellationToken)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+
+        if (desiredHashesByPin.Count == 0)
+        {
+            return new HashSet<string>();
+        }
+
+        var confirmedPins = new HashSet<string>(StringComparer.Ordinal);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+
+        foreach (var chunk in desiredHashesByPin.Chunk(500))
+        {
+            var parameters = chunk.Select((_, index) => $"$pin{index}").ToArray();
+            await using var command = connection.CreateCommand();
+            command.CommandText = $"""
+                SELECT pin, sync_hash
+                FROM zkbio_people
+                WHERE last_confirmed_at >= $fresh_after
+                  AND pin IN ({string.Join(", ", parameters)});
+                """;
+
+            command.Parameters.AddWithValue("$fresh_after", freshAfter.ToString("O"));
+
+            var index = 0;
+            foreach (var (pin, _) in chunk)
+            {
+                command.Parameters.AddWithValue(parameters[index], pin);
+                index++;
+            }
+
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var pin = reader.GetString(0);
+                var observedHash = reader.GetString(1);
+
+                if (desiredHashesByPin.TryGetValue(pin, out var desiredHash) &&
+                    string.Equals(observedHash, desiredHash, StringComparison.Ordinal))
+                {
+                    confirmedPins.Add(pin);
+                }
+            }
+        }
+
+        return confirmedPins;
+    }
+
+    public async Task UpsertZKBioCacheAsync(
+        AccessPersonCommand command,
+        DateTimeOffset observedAt,
+        CancellationToken cancellationToken)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var dbCommand = connection.CreateCommand();
+        dbCommand.CommandText = """
+            INSERT INTO zkbio_people (
+                pin,
+                name,
+                last_name,
+                access_level_ids,
+                department_code,
+                is_disabled,
+                email,
+                mobile_phone,
+                join_date,
+                access_hash,
+                profile_hash,
+                sync_hash,
+                last_confirmed_at,
+                updated_at
+            )
+            VALUES (
+                $pin,
+                $name,
+                $last_name,
+                $access_level_ids,
+                $department_code,
+                $is_disabled,
+                $email,
+                $mobile_phone,
+                $join_date,
+                $access_hash,
+                $profile_hash,
+                $sync_hash,
+                $last_confirmed_at,
+                $updated_at
+            )
+            ON CONFLICT(pin) DO UPDATE SET
+                name = excluded.name,
+                last_name = excluded.last_name,
+                access_level_ids = excluded.access_level_ids,
+                department_code = excluded.department_code,
+                is_disabled = excluded.is_disabled,
+                email = excluded.email,
+                mobile_phone = excluded.mobile_phone,
+                join_date = excluded.join_date,
+                access_hash = excluded.access_hash,
+                profile_hash = excluded.profile_hash,
+                sync_hash = excluded.sync_hash,
+                last_confirmed_at = excluded.last_confirmed_at,
+                updated_at = excluded.updated_at;
+            """;
+
+        dbCommand.Parameters.AddWithValue("$pin", command.Pin);
+        dbCommand.Parameters.AddWithValue("$name", command.Name);
+        dbCommand.Parameters.AddWithValue("$last_name", (object?)command.LastName ?? DBNull.Value);
+        dbCommand.Parameters.AddWithValue("$access_level_ids", command.AccessLevelIds);
+        dbCommand.Parameters.AddWithValue("$department_code", command.DepartmentCode);
+        dbCommand.Parameters.AddWithValue("$is_disabled", command.IsDisabled ? 1 : 0);
+        dbCommand.Parameters.AddWithValue("$email", (object?)command.Email ?? DBNull.Value);
+        dbCommand.Parameters.AddWithValue("$mobile_phone", (object?)command.MobilePhone ?? DBNull.Value);
+        dbCommand.Parameters.AddWithValue("$join_date", (object?)command.JoinDate?.ToString("O") ?? DBNull.Value);
+        dbCommand.Parameters.AddWithValue("$access_hash", command.AccessHash);
+        dbCommand.Parameters.AddWithValue("$profile_hash", command.ProfileHash);
+        dbCommand.Parameters.AddWithValue("$sync_hash", command.SyncHash);
+        dbCommand.Parameters.AddWithValue("$last_confirmed_at", observedAt.ToString("O"));
+        dbCommand.Parameters.AddWithValue("$updated_at", DateTimeOffset.UtcNow.ToString("O"));
+
+        await dbCommand.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<long> StartSyncRunAsync(SyncRunMode mode, DateTimeOffset startedAt, CancellationToken cancellationToken)
     {
         await EnsureInitializedAsync(cancellationToken);
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO sync_runs (started_at, completed_at, members_checked, status, error_message)
-            VALUES ($started_at, $started_at, 0, $status, NULL)
+            INSERT INTO sync_runs (mode, started_at, completed_at, members_checked, status, error_message)
+            VALUES ($mode, $started_at, $started_at, 0, $status, NULL)
             RETURNING id;
             """;
 
+        command.Parameters.AddWithValue("$mode", mode.ToString());
         command.Parameters.AddWithValue("$started_at", startedAt.ToString("O"));
         command.Parameters.AddWithValue("$status", SyncRunStatus.Running.ToString());
 
@@ -339,7 +469,7 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
     {
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT id, started_at, completed_at, members_checked, status, error_message
+            SELECT id, mode, started_at, completed_at, members_checked, status, error_message
             FROM sync_runs
             ORDER BY id DESC
             LIMIT 1;
@@ -355,7 +485,7 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
     {
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT id, started_at, completed_at, members_checked, status, error_message
+            SELECT id, mode, started_at, completed_at, members_checked, status, error_message
             FROM sync_runs
             ORDER BY id DESC
             LIMIT 5;
@@ -442,11 +572,12 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
     {
         return new SyncRunSummary(
             reader.GetInt64(0),
-            DateTimeOffset.Parse(reader.GetString(1)),
-            reader.IsDBNull(2) ? null : DateTimeOffset.Parse(reader.GetString(2)),
-            reader.GetInt32(3),
-            reader.IsDBNull(4) ? SyncRunStatus.Completed.ToString() : reader.GetString(4),
-            reader.IsDBNull(5) ? null : reader.GetString(5));
+            reader.IsDBNull(1) ? SyncRunMode.Fast.ToString() : reader.GetString(1),
+            DateTimeOffset.Parse(reader.GetString(2)),
+            reader.IsDBNull(3) ? null : DateTimeOffset.Parse(reader.GetString(3)),
+            reader.GetInt32(4),
+            reader.IsDBNull(5) ? SyncRunStatus.Completed.ToString() : reader.GetString(5),
+            reader.IsDBNull(6) ? null : reader.GetString(6));
     }
 
     private async Task EnsureInitializedAsync(CancellationToken cancellationToken)
@@ -519,13 +650,24 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
 
                 CREATE TABLE IF NOT EXISTS sync_runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    mode TEXT NOT NULL DEFAULT 'Fast',
                     started_at TEXT NOT NULL,
                     completed_at TEXT NULL,
                     members_checked INTEGER NOT NULL,
                     status TEXT NOT NULL DEFAULT 'Completed',
                     error_message TEXT NULL
                 );
+                """;
 
+            await command.ExecuteNonQueryAsync(cancellationToken);
+
+            command.CommandText = """
+                ALTER TABLE sync_runs ADD COLUMN mode TEXT NOT NULL DEFAULT 'Fast';
+                """;
+
+            await ExecuteSchemaCommandAsync(connection, command.CommandText, cancellationToken);
+
+            command.CommandText = """
                 ALTER TABLE sync_runs ADD COLUMN status TEXT NOT NULL DEFAULT 'Completed';
                 """;
 
@@ -538,6 +680,26 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
             await ExecuteSchemaCommandAsync(connection, command.CommandText, cancellationToken);
 
             command.CommandText = """
+                CREATE TABLE IF NOT EXISTS zkbio_people (
+                    pin TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    last_name TEXT NULL,
+                    access_level_ids TEXT NOT NULL,
+                    department_code TEXT NOT NULL,
+                    is_disabled INTEGER NOT NULL,
+                    email TEXT NULL,
+                    mobile_phone TEXT NULL,
+                    join_date TEXT NULL,
+                    access_hash TEXT NOT NULL,
+                    profile_hash TEXT NOT NULL,
+                    sync_hash TEXT NOT NULL,
+                    last_confirmed_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS ix_zkbio_people_sync_hash_confirmed
+                    ON zkbio_people(sync_hash, last_confirmed_at);
+
                 CREATE TABLE IF NOT EXISTS integration_errors (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     source TEXT NOT NULL,

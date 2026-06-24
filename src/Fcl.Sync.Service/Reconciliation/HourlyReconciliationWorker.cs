@@ -16,24 +16,44 @@ public sealed class HourlyReconciliationWorker(
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await RunOnceAsync(stoppingToken);
+        DateTimeOffset? lastFullAuditAt = null;
 
         using var timer = new PeriodicTimer(TimeSpan.FromHours(options.Value.IntervalHours));
 
+        if (options.Value.FullAuditOnStartup)
+        {
+            await RunOnceAsync(SyncRunMode.FullAudit, stoppingToken);
+            lastFullAuditAt = DateTimeOffset.UtcNow;
+        }
+        else
+        {
+            await RunOnceAsync(SyncRunMode.Fast, stoppingToken);
+        }
+
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
-            await RunOnceAsync(stoppingToken);
+            var shouldRunFullAudit = lastFullAuditAt is null ||
+                                     DateTimeOffset.UtcNow - lastFullAuditAt.Value >= TimeSpan.FromHours(options.Value.FullAuditIntervalHours);
+
+            if (shouldRunFullAudit)
+            {
+                await RunOnceAsync(SyncRunMode.FullAudit, stoppingToken);
+                lastFullAuditAt = DateTimeOffset.UtcNow;
+                continue;
+            }
+
+            await RunOnceAsync(SyncRunMode.Fast, stoppingToken);
         }
     }
 
-    private async Task RunOnceAsync(CancellationToken cancellationToken)
+    private async Task RunOnceAsync(SyncRunMode mode, CancellationToken cancellationToken)
     {
         var startedAt = DateTimeOffset.UtcNow;
-        var syncRunId = await store.StartSyncRunAsync(startedAt, cancellationToken);
+        var syncRunId = await store.StartSyncRunAsync(mode, startedAt, cancellationToken);
         var membersChecked = 0;
         var commandIdsByPin = new Dictionary<string, long>(StringComparer.Ordinal);
 
-        logger.LogInformation("Started hourly reconciliation run {SyncRunId}.", syncRunId);
+        logger.LogInformation("Started {SyncRunMode} reconciliation run {SyncRunId}.", mode, syncRunId);
 
         try
         {
@@ -58,11 +78,28 @@ public sealed class HourlyReconciliationWorker(
                 commandIdsByPin[command.Pin] = commandId;
             }
 
+            var commandsForProvider = await SelectCommandsForProviderAsync(mode, commands, cancellationToken);
+            var providerPins = commandsForProvider.Select(command => command.Pin).ToHashSet(StringComparer.Ordinal);
+            var locallySkippedCommands = commands
+                .Where(command => !providerPins.Contains(command.Pin))
+                .ToList();
+
+            foreach (var command in locallySkippedCommands)
+            {
+                await store.MarkAccessCommandAsync(
+                    commandIdsByPin[command.Pin],
+                    AccessCommandStatus.Skipped,
+                    "Fresh local ZKBio confirmation matched desired state.",
+                    cancellationToken);
+            }
+
             logger.LogInformation(
-                "Stored {MemberCount} members locally and queued {CommandCount} access commands for sync run {SyncRunId}.",
+                "Stored {MemberCount} members locally and queued {CommandCount} access commands for sync run {SyncRunId}. Provider will process {ProviderCommandCount}; local cache skipped {LocalSkipCount}.",
                 members.Count,
                 commands.Count,
-                syncRunId);
+                syncRunId,
+                commandsForProvider.Count,
+                locallySkippedCommands.Count);
 
             try
             {
@@ -71,16 +108,18 @@ public sealed class HourlyReconciliationWorker(
 
                 logger.LogInformation(
                     "Applying {CommandCount} access commands through {AccessProvider} for sync run {SyncRunId}. Timeout is {TimeoutMinutes} minutes.",
-                    commands.Count,
+                    commandsForProvider.Count,
                     accessProvider.Name,
                     syncRunId,
                     options.Value.AccessProviderTimeoutMinutes);
 
-                var results = accessProvider is IBulkAccessProvider bulkProvider
-                    ? await bulkProvider.ApplyBatchAsync(commands, providerTimeout.Token)
-                    : await ApplyOneByOneAsync(commands, providerTimeout.Token);
+                var results = commandsForProvider.Count == 0
+                    ? new Dictionary<string, AccessApplyResult>(StringComparer.Ordinal)
+                    : accessProvider is IBulkAccessProvider bulkProvider
+                        ? await bulkProvider.ApplyBatchAsync(commandsForProvider, providerTimeout.Token)
+                        : await ApplyOneByOneAsync(commandsForProvider, providerTimeout.Token);
 
-                foreach (var command in commands)
+                foreach (var command in commandsForProvider)
                 {
                     var commandId = commandIdsByPin[command.Pin];
                     var result = results.TryGetValue(command.Pin, out var foundResult)
@@ -92,16 +131,19 @@ public sealed class HourlyReconciliationWorker(
                         ToCommandStatus(result),
                         result.Message,
                         cancellationToken);
+
+                    await store.UpsertZKBioCacheAsync(command, DateTimeOffset.UtcNow, cancellationToken);
                 }
 
                 var appliedCount = results.Values.Count(result => result.Outcome == AccessApplyOutcome.Applied);
                 var skippedCount = results.Values.Count(result => result.Outcome == AccessApplyOutcome.Skipped);
                 logger.LogInformation(
-                    "Access provider {AccessProvider} finished sync run {SyncRunId}. Applied {AppliedCount}, skipped {SkippedCount}.",
+                    "Access provider {AccessProvider} finished sync run {SyncRunId}. Applied {AppliedCount}, provider skipped {ProviderSkippedCount}, local cache skipped {LocalSkipCount}.",
                     accessProvider.Name,
                     syncRunId,
                     appliedCount,
-                    skippedCount);
+                    skippedCount,
+                    locallySkippedCommands.Count);
             }
             catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
@@ -132,7 +174,7 @@ public sealed class HourlyReconciliationWorker(
             }
 
             await store.CompleteSyncRunAsync(syncRunId, DateTimeOffset.UtcNow, membersChecked, SyncRunStatus.Completed, null, cancellationToken);
-            logger.LogInformation("Completed hourly reconciliation run {SyncRunId} for {MembersChecked} members.", syncRunId, membersChecked);
+            logger.LogInformation("Completed {SyncRunMode} reconciliation run {SyncRunId} for {MembersChecked} members.", mode, syncRunId, membersChecked);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -164,6 +206,31 @@ public sealed class HourlyReconciliationWorker(
         }
 
         return results;
+    }
+
+    private async Task<IReadOnlyList<AccessPersonCommand>> SelectCommandsForProviderAsync(
+        SyncRunMode mode,
+        IReadOnlyList<AccessPersonCommand> commands,
+        CancellationToken cancellationToken)
+    {
+        if (mode == SyncRunMode.FullAudit || accessProvider.Name != "ZKBio")
+        {
+            return commands;
+        }
+
+        var freshAfter = DateTimeOffset.UtcNow.AddHours(-options.Value.ZKBioCacheMaxAgeHours);
+        var desiredHashesByPin = commands.ToDictionary(command => command.Pin, command => command.SyncHash, StringComparer.Ordinal);
+        var freshConfirmedPins = await store.GetFreshConfirmedPinsAsync(desiredHashesByPin, freshAfter, cancellationToken);
+
+        logger.LogInformation(
+            "Fast sync found {FreshConfirmedCount}/{CommandCount} commands already confirmed in local ZKBio cache since {FreshAfter}.",
+            freshConfirmedPins.Count,
+            commands.Count,
+            freshAfter);
+
+        return commands
+            .Where(command => !freshConfirmedPins.Contains(command.Pin))
+            .ToList();
     }
 
     private static AccessCommandStatus ToCommandStatus(AccessApplyResult result)
