@@ -49,8 +49,11 @@ public sealed class ZKBioClient : IZKBioClient
         IReadOnlyList<AccessPersonCommand> commands,
         CancellationToken cancellationToken)
     {
+        logger.LogInformation("Starting ZKBio batch apply for {CommandCount} people.", commands.Count);
+
         var results = new Dictionary<string, AccessApplyResult>(StringComparer.Ordinal);
         var currentPeople = await GetBatchPersonsAsync(commands.Select(command => command.Pin).ToList(), cancellationToken);
+        var processedCount = 0;
 
         foreach (var command in commands)
         {
@@ -64,8 +67,15 @@ public sealed class ZKBioClient : IZKBioClient
 
             await UpsertPersonAsync(command, cancellationToken);
             results[command.Pin] = AccessApplyResult.Applied(current is null ? "Created ZKBio person." : "Updated ZKBio person.");
+            processedCount++;
+
+            if (processedCount % 100 == 0)
+            {
+                logger.LogInformation("ZKBio upsert progress: {ProcessedCount}/{CommandCount} changed people processed.", processedCount, commands.Count);
+            }
         }
 
+        logger.LogInformation("Finished ZKBio batch apply for {CommandCount} people.", commands.Count);
         return results;
     }
 
@@ -115,6 +125,7 @@ public sealed class ZKBioClient : IZKBioClient
                 ["pageSize"] = chunk.Length.ToString()
             });
 
+            logger.LogInformation("Fetching {ChunkSize} existing ZKBio people for comparison.", chunk.Length);
             using var request = new HttpRequestMessage(HttpMethod.Post, url);
             using var response = await httpClient.SendAsync(request, cancellationToken);
             var body = await response.Content.ReadAsStringAsync(cancellationToken);

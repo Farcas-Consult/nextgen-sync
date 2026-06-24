@@ -29,12 +29,24 @@ public sealed class HourlyReconciliationWorker(
     private async Task RunOnceAsync(CancellationToken cancellationToken)
     {
         var startedAt = DateTimeOffset.UtcNow;
+        var syncRunId = await store.StartSyncRunAsync(startedAt, cancellationToken);
+        var membersChecked = 0;
+        var commandIdsByPin = new Dictionary<string, long>(StringComparer.Ordinal);
+
+        logger.LogInformation("Started hourly reconciliation run {SyncRunId}.", syncRunId);
 
         try
         {
+            await store.MarkStalePendingAccessCommandsAsync(
+                $"Marked stale because sync run {syncRunId} started before the prior pending command completed.",
+                cancellationToken);
+
+            logger.LogInformation("Fetching current members from GymMaster for sync run {SyncRunId}.", syncRunId);
             var members = await gymMasterClient.GetCurrentMembersAsync(cancellationToken);
+            membersChecked = members.Count;
+            logger.LogInformation("Fetched {MemberCount} GymMaster members for sync run {SyncRunId}.", members.Count, syncRunId);
+
             var commands = new List<AccessPersonCommand>(members.Count);
-            var commandIdsByPin = new Dictionary<string, long>(StringComparer.Ordinal);
 
             foreach (var member in members)
             {
@@ -46,11 +58,27 @@ public sealed class HourlyReconciliationWorker(
                 commandIdsByPin[command.Pin] = commandId;
             }
 
+            logger.LogInformation(
+                "Stored {MemberCount} members locally and queued {CommandCount} access commands for sync run {SyncRunId}.",
+                members.Count,
+                commands.Count,
+                syncRunId);
+
             try
             {
+                using var providerTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                providerTimeout.CancelAfter(TimeSpan.FromMinutes(options.Value.AccessProviderTimeoutMinutes));
+
+                logger.LogInformation(
+                    "Applying {CommandCount} access commands through {AccessProvider} for sync run {SyncRunId}. Timeout is {TimeoutMinutes} minutes.",
+                    commands.Count,
+                    accessProvider.Name,
+                    syncRunId,
+                    options.Value.AccessProviderTimeoutMinutes);
+
                 var results = accessProvider is IBulkAccessProvider bulkProvider
-                    ? await bulkProvider.ApplyBatchAsync(commands, cancellationToken)
-                    : await ApplyOneByOneAsync(commands, cancellationToken);
+                    ? await bulkProvider.ApplyBatchAsync(commands, providerTimeout.Token)
+                    : await ApplyOneByOneAsync(commands, providerTimeout.Token);
 
                 foreach (var command in commands)
                 {
@@ -65,6 +93,29 @@ public sealed class HourlyReconciliationWorker(
                         result.Message,
                         cancellationToken);
                 }
+
+                var appliedCount = results.Values.Count(result => result.Outcome == AccessApplyOutcome.Applied);
+                var skippedCount = results.Values.Count(result => result.Outcome == AccessApplyOutcome.Skipped);
+                logger.LogInformation(
+                    "Access provider {AccessProvider} finished sync run {SyncRunId}. Applied {AppliedCount}, skipped {SkippedCount}.",
+                    accessProvider.Name,
+                    syncRunId,
+                    appliedCount,
+                    skippedCount);
+            }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                var message = $"Access provider {accessProvider.Name} timed out after {options.Value.AccessProviderTimeoutMinutes} minutes.";
+                await store.RecordIntegrationErrorAsync(accessProvider.Name, message, ex.ToString(), CancellationToken.None);
+                logger.LogError(ex, "{Message}", message);
+
+                foreach (var commandId in commandIdsByPin.Values)
+                {
+                    await store.MarkAccessCommandAsync(commandId, AccessCommandStatus.Failed, message, CancellationToken.None);
+                }
+
+                await store.CompleteSyncRunAsync(syncRunId, DateTimeOffset.UtcNow, membersChecked, SyncRunStatus.Failed, message, CancellationToken.None);
+                return;
             }
             catch (Exception ex)
             {
@@ -75,17 +126,29 @@ public sealed class HourlyReconciliationWorker(
                 {
                     await store.MarkAccessCommandAsync(commandId, AccessCommandStatus.Failed, ex.Message, cancellationToken);
                 }
+
+                await store.CompleteSyncRunAsync(syncRunId, DateTimeOffset.UtcNow, membersChecked, SyncRunStatus.Failed, ex.Message, cancellationToken);
+                return;
             }
 
-            await store.RecordSyncRunAsync(startedAt, DateTimeOffset.UtcNow, members.Count, cancellationToken);
+            await store.CompleteSyncRunAsync(syncRunId, DateTimeOffset.UtcNow, membersChecked, SyncRunStatus.Completed, null, cancellationToken);
+            logger.LogInformation("Completed hourly reconciliation run {SyncRunId} for {MembersChecked} members.", syncRunId, membersChecked);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            await store.CompleteSyncRunAsync(syncRunId, DateTimeOffset.UtcNow, membersChecked, SyncRunStatus.Failed, "Service stopped during reconciliation.", CancellationToken.None);
             throw;
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Hourly reconciliation failed.");
+            await store.RecordIntegrationErrorAsync("Reconciliation", ex.Message, ex.ToString(), CancellationToken.None);
+            await store.CompleteSyncRunAsync(syncRunId, DateTimeOffset.UtcNow, membersChecked, SyncRunStatus.Failed, ex.Message, CancellationToken.None);
+
+            foreach (var commandId in commandIdsByPin.Values)
+            {
+                await store.MarkAccessCommandAsync(commandId, AccessCommandStatus.Failed, ex.Message, CancellationToken.None);
+            }
         }
     }
 

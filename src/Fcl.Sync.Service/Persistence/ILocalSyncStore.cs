@@ -22,7 +22,17 @@ public interface ILocalSyncStore
         string? errorMessage,
         CancellationToken cancellationToken);
 
-    Task RecordSyncRunAsync(DateTimeOffset startedAt, DateTimeOffset completedAt, int membersChecked, CancellationToken cancellationToken);
+    Task MarkStalePendingAccessCommandsAsync(string reason, CancellationToken cancellationToken);
+
+    Task<long> StartSyncRunAsync(DateTimeOffset startedAt, CancellationToken cancellationToken);
+
+    Task CompleteSyncRunAsync(
+        long syncRunId,
+        DateTimeOffset completedAt,
+        int membersChecked,
+        SyncRunStatus status,
+        string? errorMessage,
+        CancellationToken cancellationToken);
 
     Task RecordIntegrationErrorAsync(string source, string message, string? details, CancellationToken cancellationToken);
 }

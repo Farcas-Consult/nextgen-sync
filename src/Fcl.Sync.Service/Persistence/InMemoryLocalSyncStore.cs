@@ -36,9 +36,34 @@ public sealed class InMemoryLocalSyncStore(ILogger<InMemoryLocalSyncStore> logge
         return Task.CompletedTask;
     }
 
-    public Task RecordSyncRunAsync(DateTimeOffset startedAt, DateTimeOffset completedAt, int membersChecked, CancellationToken cancellationToken)
+    public Task MarkStalePendingAccessCommandsAsync(string reason, CancellationToken cancellationToken)
     {
-        logger.LogInformation("Recorded sync run for {MembersChecked} members.", membersChecked);
+        logger.LogInformation("Marked stale pending access commands as failed. {Reason}", reason);
+        return Task.CompletedTask;
+    }
+
+    public Task<long> StartSyncRunAsync(DateTimeOffset startedAt, CancellationToken cancellationToken)
+    {
+        var id = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        logger.LogInformation("Started sync run {SyncRunId}.", id);
+        return Task.FromResult(id);
+    }
+
+    public Task CompleteSyncRunAsync(
+        long syncRunId,
+        DateTimeOffset completedAt,
+        int membersChecked,
+        SyncRunStatus status,
+        string? errorMessage,
+        CancellationToken cancellationToken)
+    {
+        logger.LogInformation(
+            "Completed sync run {SyncRunId} with status {Status} for {MembersChecked} members. {ErrorMessage}",
+            syncRunId,
+            status,
+            membersChecked,
+            errorMessage);
+
         return Task.CompletedTask;
     }
 

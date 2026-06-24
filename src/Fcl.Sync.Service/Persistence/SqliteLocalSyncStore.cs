@@ -223,20 +223,72 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task RecordSyncRunAsync(DateTimeOffset startedAt, DateTimeOffset completedAt, int membersChecked, CancellationToken cancellationToken)
+    public async Task MarkStalePendingAccessCommandsAsync(string reason, CancellationToken cancellationToken)
     {
         await EnsureInitializedAsync(cancellationToken);
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO sync_runs (started_at, completed_at, members_checked)
-            VALUES ($started_at, $completed_at, $members_checked);
+            UPDATE access_commands
+            SET status = $status,
+                error_message = $error_message,
+                updated_at = $updated_at
+            WHERE status = 'Pending';
+            """;
+
+        command.Parameters.AddWithValue("$status", AccessCommandStatus.Failed.ToString());
+        command.Parameters.AddWithValue("$error_message", reason);
+        command.Parameters.AddWithValue("$updated_at", DateTimeOffset.UtcNow.ToString("O"));
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<long> StartSyncRunAsync(DateTimeOffset startedAt, CancellationToken cancellationToken)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO sync_runs (started_at, completed_at, members_checked, status, error_message)
+            VALUES ($started_at, $started_at, 0, $status, NULL)
+            RETURNING id;
             """;
 
         command.Parameters.AddWithValue("$started_at", startedAt.ToString("O"));
+        command.Parameters.AddWithValue("$status", SyncRunStatus.Running.ToString());
+
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt64(result);
+    }
+
+    public async Task CompleteSyncRunAsync(
+        long syncRunId,
+        DateTimeOffset completedAt,
+        int membersChecked,
+        SyncRunStatus status,
+        string? errorMessage,
+        CancellationToken cancellationToken)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE sync_runs
+            SET completed_at = $completed_at,
+                members_checked = $members_checked,
+                status = $status,
+                error_message = $error_message
+            WHERE id = $id;
+            """;
+
+        command.Parameters.AddWithValue("$id", syncRunId);
         command.Parameters.AddWithValue("$completed_at", completedAt.ToString("O"));
         command.Parameters.AddWithValue("$members_checked", membersChecked);
+        command.Parameters.AddWithValue("$status", status.ToString());
+        command.Parameters.AddWithValue("$error_message", (object?)errorMessage ?? DBNull.Value);
 
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -287,7 +339,7 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
     {
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT id, started_at, completed_at, members_checked
+            SELECT id, started_at, completed_at, members_checked, status, error_message
             FROM sync_runs
             ORDER BY id DESC
             LIMIT 1;
@@ -303,7 +355,7 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
     {
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT id, started_at, completed_at, members_checked
+            SELECT id, started_at, completed_at, members_checked, status, error_message
             FROM sync_runs
             ORDER BY id DESC
             LIMIT 5;
@@ -391,8 +443,10 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
         return new SyncRunSummary(
             reader.GetInt64(0),
             DateTimeOffset.Parse(reader.GetString(1)),
-            DateTimeOffset.Parse(reader.GetString(2)),
-            reader.GetInt32(3));
+            reader.IsDBNull(2) ? null : DateTimeOffset.Parse(reader.GetString(2)),
+            reader.GetInt32(3),
+            reader.IsDBNull(4) ? SyncRunStatus.Completed.ToString() : reader.GetString(4),
+            reader.IsDBNull(5) ? null : reader.GetString(5));
     }
 
     private async Task EnsureInitializedAsync(CancellationToken cancellationToken)
@@ -466,10 +520,24 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
                 CREATE TABLE IF NOT EXISTS sync_runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     started_at TEXT NOT NULL,
-                    completed_at TEXT NOT NULL,
-                    members_checked INTEGER NOT NULL
+                    completed_at TEXT NULL,
+                    members_checked INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'Completed',
+                    error_message TEXT NULL
                 );
 
+                ALTER TABLE sync_runs ADD COLUMN status TEXT NOT NULL DEFAULT 'Completed';
+                """;
+
+            await ExecuteSchemaCommandAsync(connection, command.CommandText, cancellationToken);
+
+            command.CommandText = """
+                ALTER TABLE sync_runs ADD COLUMN error_message TEXT NULL;
+                """;
+
+            await ExecuteSchemaCommandAsync(connection, command.CommandText, cancellationToken);
+
+            command.CommandText = """
                 CREATE TABLE IF NOT EXISTS integration_errors (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     source TEXT NOT NULL,
@@ -485,6 +553,20 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
         finally
         {
             gate.Release();
+        }
+    }
+
+    private static async Task ExecuteSchemaCommandAsync(SqliteConnection connection, string commandText, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = commandText;
+
+        try
+        {
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (SqliteException ex) when (ex.SqliteErrorCode == 1 && ex.Message.Contains("duplicate column name", StringComparison.OrdinalIgnoreCase))
+        {
         }
     }
 

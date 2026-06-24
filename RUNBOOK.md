@@ -20,6 +20,7 @@ AccessProvider__Type=ZKBio
 ZKBio__BaseUrl=https://your-zkbio-server
 ZKBio__AccessToken=your-zkbio-token
 ZKBio__AllowInvalidServerCertificate=true
+Reconciliation__AccessProviderTimeoutMinutes=20
 ```
 
 `GymMaster__PortalMembersUrl` is optional if `GymMaster__SiteName` and `GymMaster__ApiKey` are set. The service will derive:
@@ -57,10 +58,14 @@ http://127.0.0.1:5050/dashboard
 It refreshes every 30 seconds and shows:
 
 - members currently stored in SQLite
-- latest sync start/completion time, duration, and members checked
+- latest sync status, start/completion time, duration, and members checked
 - latest access command outcomes: `Applied`, `Skipped`, `Failed`, or `Pending`
 - recent sync runs
 - recent integration errors
+
+If `Latest Sync` shows `Running`, the service is actively working. If it shows `Failed`, check `Recent Integration Errors`.
+
+`Pending Commands` should normally return to `0` after each run. If it grows and stays non-zero, the access-provider phase is not completing.
 
 The same data is available as JSON:
 
@@ -139,6 +144,14 @@ The production sync order is:
 ```
 
 The service does not delete ZKBio people.
+
+The access-provider phase has a timeout controlled by:
+
+```text
+Reconciliation__AccessProviderTimeoutMinutes=20
+```
+
+If ZKBio hangs or is unreachable, the run is marked `Failed`, pending commands from that run are marked `Failed`, and the next hourly sync can try again.
 
 Check latest command outcomes:
 

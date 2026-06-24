@@ -194,7 +194,7 @@ public static class DashboardEndpoints
         html.AppendLine("<main>");
         html.AppendLine("<div class=\"status-row\">");
         AppendMetric(html, "Members in SQLite", snapshot.MemberCount.ToString("N0"));
-        AppendMetric(html, "Latest Sync", latest is null ? "No sync yet" : FormatTimestamp(latest.CompletedAt), "small mono");
+        AppendMetric(html, "Latest Sync", latest is null ? "No sync yet" : FormatRunTimestamp(latest), "small mono");
         AppendMetric(html, "Latest Access Health", healthText, latestFailedCount == 0 ? "small ok" : "small bad");
         AppendMetric(html, "Pending Commands", snapshot.PendingCommandCount.ToString("N0"), snapshot.PendingCommandCount == 0 ? null : "warn");
         html.AppendLine("</div>");
@@ -209,10 +209,16 @@ public static class DashboardEndpoints
         {
             html.AppendLine("<table><tbody>");
             AppendKeyValueRow(html, "Run ID", latest.Id.ToString());
+            AppendKeyValueRow(html, "Status", latest.Status);
             AppendKeyValueRow(html, "Started", FormatTimestamp(latest.StartedAt));
-            AppendKeyValueRow(html, "Completed", FormatTimestamp(latest.CompletedAt));
+            AppendKeyValueRow(html, "Completed", IsRunning(latest) ? "Running" : FormatTimestamp(latest.CompletedAt!.Value));
             AppendKeyValueRow(html, "Duration", FormatDuration(latest.Duration));
             AppendKeyValueRow(html, "Members Checked", latest.MembersChecked.ToString("N0"));
+            if (!string.IsNullOrWhiteSpace(latest.ErrorMessage))
+            {
+                AppendKeyValueRow(html, "Error", latest.ErrorMessage);
+            }
+
             html.AppendLine("</tbody></table>");
         }
 
@@ -282,11 +288,12 @@ public static class DashboardEndpoints
             return;
         }
 
-        html.AppendLine("<table><thead><tr><th>ID</th><th>Completed</th><th>Members</th><th>Duration</th></tr></thead><tbody>");
+        html.AppendLine("<table><thead><tr><th>ID</th><th>Status</th><th>Completed</th><th>Members</th><th>Duration</th></tr></thead><tbody>");
         foreach (var run in runs)
         {
             html.Append("<tr><td class=\"mono\">").Append(Escape(run.Id.ToString())).Append("</td>");
-            html.Append("<td class=\"mono\">").Append(Escape(FormatTimestamp(run.CompletedAt))).Append("</td>");
+            html.Append("<td>").Append(Escape(run.Status)).Append("</td>");
+            html.Append("<td class=\"mono\">").Append(Escape(IsRunning(run) ? "Running" : FormatTimestamp(run.CompletedAt!.Value))).Append("</td>");
             html.Append("<td class=\"mono\">").Append(Escape(run.MembersChecked.ToString("N0"))).Append("</td>");
             html.Append("<td class=\"mono\">").Append(Escape(FormatDuration(run.Duration))).AppendLine("</td></tr>");
         }
@@ -316,6 +323,25 @@ public static class DashboardEndpoints
     private static string FormatTimestamp(DateTimeOffset value)
     {
         return value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz");
+    }
+
+    private static string FormatRunTimestamp(SyncRunSummary? run)
+    {
+        if (run is null)
+        {
+            return "No sync yet";
+        }
+
+        return run.CompletedAt is null
+            ? $"Running since {FormatTimestamp(run.StartedAt)}"
+            : IsRunning(run)
+                ? $"Running since {FormatTimestamp(run.StartedAt)}"
+            : FormatTimestamp(run.CompletedAt.Value);
+    }
+
+    private static bool IsRunning(SyncRunSummary run)
+    {
+        return string.Equals(run.Status, "Running", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string FormatDuration(TimeSpan value)

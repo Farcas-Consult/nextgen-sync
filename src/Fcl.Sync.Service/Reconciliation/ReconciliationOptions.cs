@@ -8,4 +8,7 @@ public sealed class ReconciliationOptions
 
     [Range(1, 24)]
     public int IntervalHours { get; init; } = 1;
+
+    [Range(1, 120)]
+    public int AccessProviderTimeoutMinutes { get; init; } = 20;
 }
