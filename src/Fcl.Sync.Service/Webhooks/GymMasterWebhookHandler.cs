@@ -52,12 +52,30 @@ public sealed class GymMasterWebhookHandler(
 
         try
         {
+            logger.LogInformation(
+                "Processing GymMaster webhook {EventId} ({EventType}) for member {MemberId}.",
+                webhookEvent.EventId,
+                webhookEvent.EventType,
+                webhookEvent.Payload.MemberId);
+
             var result = await accessProvider.ApplyAsync(command, cancellationToken);
             await store.MarkAccessCommandAsync(
                 commandId,
-                result.Outcome == AccessApplyOutcome.Skipped ? AccessCommandStatus.Skipped : AccessCommandStatus.Applied,
+                ToCommandStatus(result),
                 result.Message,
                 cancellationToken);
+
+            if (accessProvider.Name == "ZKBio" && result.Outcome is AccessApplyOutcome.Applied or AccessApplyOutcome.Skipped)
+            {
+                await store.UpsertZKBioCacheAsync(command, DateTimeOffset.UtcNow, cancellationToken);
+            }
+
+            logger.LogInformation(
+                "Processed GymMaster webhook {EventId} for member {MemberId}; access command {CommandId} is {Status}.",
+                webhookEvent.EventId,
+                webhookEvent.Payload.MemberId,
+                commandId,
+                result.Outcome);
         }
         catch (Exception ex)
         {
@@ -65,5 +83,15 @@ public sealed class GymMasterWebhookHandler(
             await store.RecordIntegrationErrorAsync(accessProvider.Name, ex.Message, ex.ToString(), cancellationToken);
             throw;
         }
+    }
+
+    private static AccessCommandStatus ToCommandStatus(AccessApplyResult result)
+    {
+        return result.Outcome switch
+        {
+            AccessApplyOutcome.Skipped => AccessCommandStatus.Skipped,
+            AccessApplyOutcome.Failed => AccessCommandStatus.Failed,
+            _ => AccessCommandStatus.Applied
+        };
     }
 }

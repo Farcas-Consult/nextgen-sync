@@ -10,6 +10,7 @@ public sealed record SyncDashboardSnapshot(
     IReadOnlyList<CommandStatusCount> LatestCommandCounts,
     IReadOnlyList<CommandStatusCount> AllCommandCounts,
     IReadOnlyList<SyncRunSummary> RecentSyncRuns,
+    IReadOnlyList<WebhookEventSummary> RecentWebhookEvents,
     IReadOnlyList<IntegrationErrorSummary> RecentErrors);
 
 public sealed record SyncRunSummary(
@@ -32,3 +33,9 @@ public sealed record IntegrationErrorSummary(
     string Source,
     string Message,
     DateTimeOffset CreatedAt);
+
+public sealed record WebhookEventSummary(
+    long EventId,
+    string EventType,
+    long? MemberId,
+    DateTimeOffset ReceivedAt);

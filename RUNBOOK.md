@@ -199,3 +199,37 @@ The request must include:
 ```text
 X-Gymmaster-Token: your-webhook-token
 ```
+
+Local smoke test with the safe `Noop` provider:
+
+```bash
+AccessProvider__Type=Noop \
+GymMaster__Webhooks__SecretToken=test-webhook-token \
+dotnet run --project src/Fcl.Sync.Service/Fcl.Sync.Service.csproj --no-launch-profile --urls http://127.0.0.1:5050
+```
+
+Then post a sample event:
+
+```bash
+curl -i -X POST http://127.0.0.1:5050/webhooks/gymmaster \
+  -H 'Content-Type: application/json' \
+  -H 'X-Gymmaster-Token: test-webhook-token' \
+  --data '{
+    "event_id": 990002,
+    "event_type": "member_update",
+    "event_timestamp": "2026-06-24T19:28:10.472+12:00",
+    "processed_at": "2026-06-24T19:28:25.608+12:00",
+    "payload": {
+      "memberid": 974303,
+      "companyid": 4
+    }
+  }'
+```
+
+Expected response:
+
+```text
+202 Accepted
+```
+
+The dashboard should show the event under `Recent Webhooks`, and SQLite should have a new access command for that member.

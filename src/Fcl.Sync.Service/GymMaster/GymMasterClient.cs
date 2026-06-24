@@ -18,7 +18,18 @@ public sealed class GymMasterClient : IGymMasterClient
 
     public async Task<GymMasterMember?> GetMemberAsync(long memberId, long? companyId, CancellationToken cancellationToken)
     {
-        var members = await GetPortalMembersAsync(companyId, cancellationToken);
+        if (companyId is not null)
+        {
+            var companyMembers = await GetPortalMembersAsync(companyId, cancellationToken);
+            var companyMember = companyMembers.FirstOrDefault(member => member.MemberId == memberId);
+
+            if (companyMember is not null)
+            {
+                return companyMember;
+            }
+        }
+
+        var members = await GetPortalMembersAsync(companyId: null, cancellationToken);
         return members.FirstOrDefault(member => member.MemberId == memberId);
     }
 

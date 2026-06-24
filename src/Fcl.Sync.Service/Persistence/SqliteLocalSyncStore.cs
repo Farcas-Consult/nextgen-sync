@@ -462,6 +462,7 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
             LatestCommandCounts: latestCommandCounts,
             AllCommandCounts: await GetCommandCountsAsync(connection, null, null, cancellationToken),
             RecentSyncRuns: await GetRecentSyncRunsAsync(connection, cancellationToken),
+            RecentWebhookEvents: await GetRecentWebhookEventsAsync(connection, cancellationToken),
             RecentErrors: await GetRecentErrorsAsync(connection, cancellationToken));
     }
 
@@ -559,6 +560,30 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
         }
 
         return errors;
+    }
+
+    private static async Task<IReadOnlyList<WebhookEventSummary>> GetRecentWebhookEventsAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT event_id, event_type, member_id, received_at
+            FROM webhook_events
+            ORDER BY received_at DESC
+            LIMIT 10;
+            """;
+
+        var events = new List<WebhookEventSummary>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            events.Add(new WebhookEventSummary(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetInt64(2),
+                DateTimeOffset.Parse(reader.GetString(3))));
+        }
+
+        return events;
     }
 
     private static async Task<int> GetScalarIntAsync(SqliteConnection connection, string commandText, CancellationToken cancellationToken)

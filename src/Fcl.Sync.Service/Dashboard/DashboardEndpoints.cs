@@ -238,6 +238,10 @@ public static class DashboardEndpoints
         html.AppendLine("</div></section>");
         html.AppendLine("</div>");
 
+        html.AppendLine("<section><h2>Recent Webhooks</h2><div class=\"section-body\">");
+        AppendWebhookTable(html, snapshot.RecentWebhookEvents);
+        html.AppendLine("</div></section>");
+
         html.AppendLine("<section><h2>Recent Integration Errors</h2><div class=\"section-body\">");
         AppendErrorTable(html, snapshot.RecentErrors);
         html.AppendLine("</div></section>");
@@ -317,6 +321,26 @@ public static class DashboardEndpoints
             html.Append("<tr><td class=\"mono\">").Append(Escape(FormatTimestamp(error.CreatedAt))).Append("</td>");
             html.Append("<td>").Append(Escape(error.Source)).Append("</td>");
             html.Append("<td>").Append(Escape(error.Message)).AppendLine("</td></tr>");
+        }
+
+        html.AppendLine("</tbody></table>");
+    }
+
+    private static void AppendWebhookTable(StringBuilder html, IReadOnlyList<WebhookEventSummary> events)
+    {
+        if (events.Count == 0)
+        {
+            html.AppendLine("<div class=\"subtle\">No webhook events recorded yet.</div>");
+            return;
+        }
+
+        html.AppendLine("<table><thead><tr><th>Received</th><th>Event ID</th><th>Type</th><th>Member</th></tr></thead><tbody>");
+        foreach (var webhookEvent in events)
+        {
+            html.Append("<tr><td class=\"mono\">").Append(Escape(FormatTimestamp(webhookEvent.ReceivedAt))).Append("</td>");
+            html.Append("<td class=\"mono\">").Append(Escape(webhookEvent.EventId.ToString())).Append("</td>");
+            html.Append("<td>").Append(Escape(webhookEvent.EventType)).Append("</td>");
+            html.Append("<td class=\"mono\">").Append(Escape(webhookEvent.MemberId?.ToString() ?? "")).AppendLine("</td></tr>");
         }
 
         html.AppendLine("</tbody></table>");
