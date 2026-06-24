@@ -186,6 +186,72 @@ sqlite3 src/Fcl.Sync.Service/bin/Debug/net10.0/data/fcl-sync.db \
   "select status, count(*) from access_commands where created_at >= (select started_at from sync_runs order by id desc limit 1) group by status order by status;"
 ```
 
+## Install As Windows Service
+
+Install the .NET 10 Hosting Bundle or runtime on the Windows PC first.
+
+Publish the service:
+
+```powershell
+dotnet publish .\src\Fcl.Sync.Service\Fcl.Sync.Service.csproj -c Release -o C:\FclSync
+```
+
+Create `C:\FclSync\.env` with the production settings. The SQLite database should also live under this folder by default:
+
+```text
+Sqlite__ConnectionString=Data Source=C:\FclSync\data\fcl-sync.db
+```
+
+Install the Windows service from an Administrator PowerShell:
+
+```powershell
+New-Service `
+  -Name "FclSyncService" `
+  -BinaryPathName "C:\FclSync\Fcl.Sync.Service.exe --urls http://127.0.0.1:5050" `
+  -DisplayName "FCL GymMaster Sync" `
+  -Description "Syncs GymMaster members to the local access provider." `
+  -StartupType Automatic
+```
+
+Start it:
+
+```powershell
+Start-Service FclSyncService
+```
+
+Check status:
+
+```powershell
+Get-Service FclSyncService
+```
+
+Open the dashboard on that PC:
+
+```text
+http://127.0.0.1:5050/dashboard
+```
+
+View logs in Windows Event Viewer:
+
+```text
+Event Viewer > Windows Logs > Application
+```
+
+Stop or restart:
+
+```powershell
+Stop-Service FclSyncService
+Start-Service FclSyncService
+Restart-Service FclSyncService
+```
+
+Uninstall:
+
+```powershell
+Stop-Service FclSyncService
+sc.exe delete FclSyncService
+```
+
 ## Webhook Endpoint
 
 GymMaster should post to:

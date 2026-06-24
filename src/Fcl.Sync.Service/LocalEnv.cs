@@ -41,7 +41,19 @@ public static class LocalEnv
 
     private static string? FindEnvFile()
     {
-        var directory = new DirectoryInfo(Directory.GetCurrentDirectory());
+        var appDirectoryEnv = FindEnvFileFrom(AppContext.BaseDirectory);
+
+        if (appDirectoryEnv is not null)
+        {
+            return appDirectoryEnv;
+        }
+
+        return FindEnvFileFrom(Directory.GetCurrentDirectory());
+    }
+
+    private static string? FindEnvFileFrom(string startDirectory)
+    {
+        var directory = new DirectoryInfo(startDirectory);
 
         while (directory is not null)
         {
