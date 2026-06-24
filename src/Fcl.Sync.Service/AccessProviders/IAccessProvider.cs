@@ -4,5 +4,5 @@ public interface IAccessProvider
 {
     string Name { get; }
 
-    Task ApplyAsync(AccessPersonCommand command, CancellationToken cancellationToken);
+    Task<AccessApplyResult> ApplyAsync(AccessPersonCommand command, CancellationToken cancellationToken);
 }

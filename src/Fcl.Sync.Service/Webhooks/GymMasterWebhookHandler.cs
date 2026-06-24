@@ -52,8 +52,12 @@ public sealed class GymMasterWebhookHandler(
 
         try
         {
-            await accessProvider.ApplyAsync(command, cancellationToken);
-            await store.MarkAccessCommandAsync(commandId, AccessCommandStatus.Applied, null, cancellationToken);
+            var result = await accessProvider.ApplyAsync(command, cancellationToken);
+            await store.MarkAccessCommandAsync(
+                commandId,
+                result.Outcome == AccessApplyOutcome.Skipped ? AccessCommandStatus.Skipped : AccessCommandStatus.Applied,
+                result.Message,
+                cancellationToken);
         }
         catch (Exception ex)
         {

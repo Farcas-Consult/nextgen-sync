@@ -33,6 +33,8 @@ public sealed class HourlyReconciliationWorker(
         try
         {
             var members = await gymMasterClient.GetCurrentMembersAsync(cancellationToken);
+            var commands = new List<AccessPersonCommand>(members.Count);
+            var commandIdsByPin = new Dictionary<string, long>(StringComparer.Ordinal);
 
             foreach (var member in members)
             {
@@ -40,17 +42,38 @@ public sealed class HourlyReconciliationWorker(
                 await store.UpsertMemberAsync(member, decision, cancellationToken);
                 var command = AccessPersonCommand.From(member, decision);
                 var commandId = await store.RecordAccessCommandAsync(accessProvider.Name, command.Pin, command, cancellationToken);
+                commands.Add(command);
+                commandIdsByPin[command.Pin] = commandId;
+            }
 
-                try
+            try
+            {
+                var results = accessProvider is IBulkAccessProvider bulkProvider
+                    ? await bulkProvider.ApplyBatchAsync(commands, cancellationToken)
+                    : await ApplyOneByOneAsync(commands, cancellationToken);
+
+                foreach (var command in commands)
                 {
-                    await accessProvider.ApplyAsync(command, cancellationToken);
-                    await store.MarkAccessCommandAsync(commandId, AccessCommandStatus.Applied, null, cancellationToken);
+                    var commandId = commandIdsByPin[command.Pin];
+                    var result = results.TryGetValue(command.Pin, out var foundResult)
+                        ? foundResult
+                        : AccessApplyResult.Applied("Provider did not return a result.");
+
+                    await store.MarkAccessCommandAsync(
+                        commandId,
+                        ToCommandStatus(result),
+                        result.Message,
+                        cancellationToken);
                 }
-                catch (Exception ex)
+            }
+            catch (Exception ex)
+            {
+                await store.RecordIntegrationErrorAsync(accessProvider.Name, ex.Message, ex.ToString(), cancellationToken);
+                logger.LogError(ex, "Access provider {AccessProvider} failed during hourly reconciliation.", accessProvider.Name);
+
+                foreach (var commandId in commandIdsByPin.Values)
                 {
                     await store.MarkAccessCommandAsync(commandId, AccessCommandStatus.Failed, ex.Message, cancellationToken);
-                    await store.RecordIntegrationErrorAsync(accessProvider.Name, ex.Message, ex.ToString(), cancellationToken);
-                    logger.LogError(ex, "Access provider {AccessProvider} failed for member {MemberId}.", accessProvider.Name, member.MemberId);
                 }
             }
 
@@ -64,5 +87,26 @@ public sealed class HourlyReconciliationWorker(
         {
             logger.LogError(ex, "Hourly reconciliation failed.");
         }
+    }
+
+    private async Task<IReadOnlyDictionary<string, AccessApplyResult>> ApplyOneByOneAsync(
+        IReadOnlyList<AccessPersonCommand> commands,
+        CancellationToken cancellationToken)
+    {
+        var results = new Dictionary<string, AccessApplyResult>(StringComparer.Ordinal);
+
+        foreach (var command in commands)
+        {
+            results[command.Pin] = await accessProvider.ApplyAsync(command, cancellationToken);
+        }
+
+        return results;
+    }
+
+    private static AccessCommandStatus ToCommandStatus(AccessApplyResult result)
+    {
+        return result.Outcome == AccessApplyOutcome.Skipped
+            ? AccessCommandStatus.Skipped
+            : AccessCommandStatus.Applied;
     }
 }

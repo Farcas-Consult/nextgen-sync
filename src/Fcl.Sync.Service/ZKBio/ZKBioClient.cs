@@ -32,36 +32,233 @@ public sealed class ZKBioClient : IZKBioClient
         this.httpClient.BaseAddress = new Uri(this.options.BaseUrl.TrimEnd('/') + "/");
     }
 
-    public async Task UpsertPersonAsync(AccessPersonCommand command, CancellationToken cancellationToken)
+    public async Task<AccessApplyResult> ApplyPersonAsync(AccessPersonCommand command, CancellationToken cancellationToken)
     {
-        var payload = ZKBioPersonPayload.From(command);
-        var url = BuildUrl("api/person/add");
-        var json = JsonSerializer.Serialize(payload, JsonOptions);
+        var current = await GetPersonAsync(command.Pin, cancellationToken);
 
-        using var content = new StringContent(json, Encoding.UTF8, "application/json");
-        using var response = await httpClient.PostAsync(url, content, cancellationToken);
+        if (current is not null && Matches(command, current))
+        {
+            return AccessApplyResult.Skipped("ZKBio person already matches desired state.");
+        }
+
+        await UpsertPersonAsync(command, cancellationToken);
+        return AccessApplyResult.Applied(current is null ? "Created ZKBio person." : "Updated ZKBio person.");
+    }
+
+    public async Task<IReadOnlyDictionary<string, AccessApplyResult>> ApplyPeopleAsync(
+        IReadOnlyList<AccessPersonCommand> commands,
+        CancellationToken cancellationToken)
+    {
+        var results = new Dictionary<string, AccessApplyResult>(StringComparer.Ordinal);
+        var currentPeople = await GetBatchPersonsAsync(commands.Select(command => command.Pin).ToList(), cancellationToken);
+
+        foreach (var command in commands)
+        {
+            currentPeople.TryGetValue(command.Pin, out var current);
+
+            if (current is not null && Matches(command, current))
+            {
+                results[command.Pin] = AccessApplyResult.Skipped("ZKBio person already matches desired state.");
+                continue;
+            }
+
+            await UpsertPersonAsync(command, cancellationToken);
+            results[command.Pin] = AccessApplyResult.Applied(current is null ? "Created ZKBio person." : "Updated ZKBio person.");
+        }
+
+        return results;
+    }
+
+    private async Task<ZKBioPerson?> GetPersonAsync(string pin, CancellationToken cancellationToken)
+    {
+        using var response = await httpClient.GetAsync(BuildUrl($"api/person/get/{Uri.EscapeDataString(pin)}", new Dictionary<string, string>
+        {
+            ["_t"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString()
+        }), cancellationToken);
+
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
 
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
 
         if (!response.IsSuccessStatusCode)
         {
-            throw new HttpRequestException($"ZKBio returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
+            throw new HttpRequestException($"ZKBio get person {pin} returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
+        }
+
+        var result = JsonSerializer.Deserialize<ZKBioApiResponse<ZKBioPerson>>(body, JsonOptions);
+
+        if (result is not null && result.Code < 0)
+        {
+            logger.LogWarning("ZKBio get person {Pin} returned API code {Code}: {Message}", pin, result.Code, result.Message);
+            return null;
+        }
+
+        return result?.Data;
+    }
+
+    private async Task<IReadOnlyDictionary<string, ZKBioPerson>> GetBatchPersonsAsync(
+        IReadOnlyList<string> pins,
+        CancellationToken cancellationToken)
+    {
+        var results = new Dictionary<string, ZKBioPerson>(StringComparer.Ordinal);
+
+        foreach (var chunk in pins.Chunk(options.BatchSize))
+        {
+            var pinList = string.Join(',', chunk);
+            var url = BuildUrl("api/person/getPersonList", new Dictionary<string, string>
+            {
+                ["pins"] = pinList,
+                ["pageNo"] = "1",
+                ["pageSize"] = chunk.Length.ToString()
+            });
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, url);
+            using var response = await httpClient.SendAsync(request, cancellationToken);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new HttpRequestException($"ZKBio getPersonList returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
+            }
+
+            var apiResult = JsonSerializer.Deserialize<ZKBioApiResponse<JsonElement>>(body, JsonOptions);
+
+            if (apiResult is not null && apiResult.Code < 0)
+            {
+                throw new InvalidOperationException($"ZKBio getPersonList API error {apiResult.Code}: {apiResult.Message}");
+            }
+
+            foreach (var person in ExtractPersons(apiResult?.Data))
+            {
+                if (!string.IsNullOrWhiteSpace(person.Pin))
+                {
+                    results[person.Pin] = person;
+                }
+            }
+        }
+
+        logger.LogInformation("Fetched {Count} existing ZKBio people for comparison.", results.Count);
+        return results;
+    }
+
+    private async Task UpsertPersonAsync(AccessPersonCommand command, CancellationToken cancellationToken)
+    {
+        var payload = ZKBioPersonPayload.From(command);
+        var json = JsonSerializer.Serialize(payload, JsonOptions);
+
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        using var response = await httpClient.PostAsync(BuildUrl("api/person/add"), content, cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException($"ZKBio upsert person {command.Pin} returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
         }
 
         var result = JsonSerializer.Deserialize<ZKBioApiResponse<object>>(body, JsonOptions);
 
         if (result is not null && result.Code < 0)
         {
-            throw new InvalidOperationException($"ZKBio API error {result.Code}: {result.Message}");
+            throw new InvalidOperationException($"ZKBio upsert person {command.Pin} API error {result.Code}: {result.Message}");
         }
 
         logger.LogInformation("ZKBio accepted upsert for PIN {Pin}.", command.Pin);
     }
 
-    private string BuildUrl(string endpoint)
+    private static bool Matches(AccessPersonCommand desired, ZKBioPerson current)
+    {
+        return Same(desired.Name, current.Name) &&
+               Same(desired.LastName, current.LastName) &&
+               Same(desired.DepartmentCode, current.DepartmentCode) &&
+               desired.IsDisabled == current.IsDisabled &&
+               SameAccessLevels(desired.AccessLevelIds, current.AccessLevelIds) &&
+               Same(desired.Email, current.Email) &&
+               Same(desired.MobilePhone, current.MobilePhone);
+    }
+
+    private static bool Same(string? desired, string? current)
+    {
+        return string.Equals(Normalize(desired), Normalize(current), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string Normalize(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) || value is "null" ? "" : value.Trim();
+    }
+
+    private static bool SameAccessLevels(string? desired, string? current)
+    {
+        var desiredSet = NormalizeAccessLevels(desired);
+        var currentSet = NormalizeAccessLevels(current);
+        return desiredSet.SetEquals(currentSet);
+    }
+
+    private static HashSet<string> NormalizeAccessLevels(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value is "null")
+        {
+            return [];
+        }
+
+        return value
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(item => !string.Equals(item, "null", StringComparison.OrdinalIgnoreCase))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IReadOnlyList<ZKBioPerson> ExtractPersons(JsonElement? data)
+    {
+        if (data is null)
+        {
+            return [];
+        }
+
+        var element = data.Value;
+
+        if (element.ValueKind == JsonValueKind.Array)
+        {
+            return JsonSerializer.Deserialize<IReadOnlyList<ZKBioPerson>>(element.GetRawText(), JsonOptions) ?? [];
+        }
+
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return [];
+        }
+
+        foreach (var propertyName in new[] { "list", "data", "persons", "result" })
+        {
+            if (element.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.Array)
+            {
+                return JsonSerializer.Deserialize<IReadOnlyList<ZKBioPerson>>(property.GetRawText(), JsonOptions) ?? [];
+            }
+        }
+
+        return [];
+    }
+
+    private string BuildUrl(string endpoint, IReadOnlyDictionary<string, string>? parameters = null)
     {
         var separator = endpoint.Contains('?', StringComparison.Ordinal) ? "&" : "?";
-        return $"{endpoint}{separator}access_token={Uri.EscapeDataString(options.AccessToken)}";
+        var builder = new StringBuilder(endpoint)
+            .Append(separator)
+            .Append("access_token=")
+            .Append(Uri.EscapeDataString(options.AccessToken));
+
+        if (parameters is not null)
+        {
+            foreach (var (key, value) in parameters)
+            {
+                builder.Append('&')
+                    .Append(Uri.EscapeDataString(key))
+                    .Append('=')
+                    .Append(Uri.EscapeDataString(value));
+            }
+        }
+
+        return builder.ToString();
     }
 }
 
@@ -75,6 +272,33 @@ internal sealed record ZKBioApiResponse<T>
 
     [JsonPropertyName("data")]
     public T? Data { get; init; }
+}
+
+internal sealed record ZKBioPerson
+{
+    [JsonPropertyName("pin")]
+    public string Pin { get; init; } = "";
+
+    [JsonPropertyName("name")]
+    public string? Name { get; init; }
+
+    [JsonPropertyName("lastName")]
+    public string? LastName { get; init; }
+
+    [JsonPropertyName("accLevelIds")]
+    public string? AccessLevelIds { get; init; }
+
+    [JsonPropertyName("deptCode")]
+    public string? DepartmentCode { get; init; }
+
+    [JsonPropertyName("isDisabled")]
+    public bool IsDisabled { get; init; }
+
+    [JsonPropertyName("email")]
+    public string? Email { get; init; }
+
+    [JsonPropertyName("mobilePhone")]
+    public string? MobilePhone { get; init; }
 }
 
 internal sealed record ZKBioPersonPayload

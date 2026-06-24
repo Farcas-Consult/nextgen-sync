@@ -104,6 +104,27 @@ dotnet run --project src/Fcl.Sync.Service/Fcl.Sync.Service.csproj --no-launch-pr
 
 `AccessProvider__Type=ZKBio` should be set in `.env`.
 
+The production sync order is:
+
+```text
+1. Fetch current members from GymMaster Portal API
+2. Save/update members in SQLite
+3. Compute desired access state
+4. Fetch matching people from ZKBio by PIN
+5. Skip people that already match
+6. Create/update missing or changed people through ZKBio API
+7. Record Applied, Skipped, or Failed command status in SQLite
+```
+
+The service does not delete ZKBio people.
+
+Check latest command outcomes:
+
+```bash
+sqlite3 src/Fcl.Sync.Service/bin/Debug/net10.0/data/fcl-sync.db \
+  "select status, count(*) from access_commands where created_at >= (select started_at from sync_runs order by id desc limit 1) group by status order by status;"
+```
+
 ## Webhook Endpoint
 
 GymMaster should post to:

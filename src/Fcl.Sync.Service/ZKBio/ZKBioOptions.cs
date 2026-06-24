@@ -13,4 +13,6 @@ public sealed class ZKBioOptions
     public string AccessToken { get; init; } = "";
 
     public bool AllowInvalidServerCertificate { get; init; }
+
+    public int BatchSize { get; init; } = 100;
 }

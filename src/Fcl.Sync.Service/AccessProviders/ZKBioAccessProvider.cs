@@ -2,12 +2,19 @@ using Fcl.Sync.Service.ZKBio;
 
 namespace Fcl.Sync.Service.AccessProviders;
 
-public sealed class ZKBioAccessProvider(IZKBioClient zkbioClient) : IAccessProvider
+public sealed class ZKBioAccessProvider(IZKBioClient zkbioClient) : IBulkAccessProvider
 {
     public string Name => "ZKBio";
 
-    public Task ApplyAsync(AccessPersonCommand command, CancellationToken cancellationToken)
+    public Task<AccessApplyResult> ApplyAsync(AccessPersonCommand command, CancellationToken cancellationToken)
     {
-        return zkbioClient.UpsertPersonAsync(command, cancellationToken);
+        return zkbioClient.ApplyPersonAsync(command, cancellationToken);
+    }
+
+    public Task<IReadOnlyDictionary<string, AccessApplyResult>> ApplyBatchAsync(
+        IReadOnlyList<AccessPersonCommand> commands,
+        CancellationToken cancellationToken)
+    {
+        return zkbioClient.ApplyPeopleAsync(commands, cancellationToken);
     }
 }
