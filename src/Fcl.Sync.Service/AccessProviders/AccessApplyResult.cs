@@ -5,10 +5,13 @@ public sealed record AccessApplyResult(AccessApplyOutcome Outcome, string? Messa
     public static AccessApplyResult Applied(string? message = null) => new(AccessApplyOutcome.Applied, message);
 
     public static AccessApplyResult Skipped(string? message = null) => new(AccessApplyOutcome.Skipped, message);
+
+    public static AccessApplyResult Failed(string? message = null) => new(AccessApplyOutcome.Failed, message);
 }
 
 public enum AccessApplyOutcome
 {
     Applied,
-    Skipped
+    Skipped,
+    Failed
 }

@@ -152,6 +152,10 @@ The production sync order is:
 
 The service does not delete ZKBio people.
 
+ZKBio person-level failures do not stop the rest of the batch. The failed PIN is marked `Failed`, the error is saved on the access command, and the sync continues with the next person.
+
+If ZKBio rejects a person because the mailbox/email already exists, the service retries that same person without email so access permissions can still sync.
+
 There are two reconciliation modes:
 
 ```text

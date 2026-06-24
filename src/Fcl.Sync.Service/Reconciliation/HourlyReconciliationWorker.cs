@@ -132,17 +132,22 @@ public sealed class HourlyReconciliationWorker(
                         result.Message,
                         cancellationToken);
 
-                    await store.UpsertZKBioCacheAsync(command, DateTimeOffset.UtcNow, cancellationToken);
+                    if (result.Outcome is AccessApplyOutcome.Applied or AccessApplyOutcome.Skipped)
+                    {
+                        await store.UpsertZKBioCacheAsync(command, DateTimeOffset.UtcNow, cancellationToken);
+                    }
                 }
 
                 var appliedCount = results.Values.Count(result => result.Outcome == AccessApplyOutcome.Applied);
                 var skippedCount = results.Values.Count(result => result.Outcome == AccessApplyOutcome.Skipped);
+                var failedCount = results.Values.Count(result => result.Outcome == AccessApplyOutcome.Failed);
                 logger.LogInformation(
-                    "Access provider {AccessProvider} finished sync run {SyncRunId}. Applied {AppliedCount}, provider skipped {ProviderSkippedCount}, local cache skipped {LocalSkipCount}.",
+                    "Access provider {AccessProvider} finished sync run {SyncRunId}. Applied {AppliedCount}, provider skipped {ProviderSkippedCount}, failed {FailedCount}, local cache skipped {LocalSkipCount}.",
                     accessProvider.Name,
                     syncRunId,
                     appliedCount,
                     skippedCount,
+                    failedCount,
                     locallySkippedCommands.Count);
             }
             catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
@@ -235,8 +240,11 @@ public sealed class HourlyReconciliationWorker(
 
     private static AccessCommandStatus ToCommandStatus(AccessApplyResult result)
     {
-        return result.Outcome == AccessApplyOutcome.Skipped
-            ? AccessCommandStatus.Skipped
-            : AccessCommandStatus.Applied;
+        return result.Outcome switch
+        {
+            AccessApplyOutcome.Skipped => AccessCommandStatus.Skipped,
+            AccessApplyOutcome.Failed => AccessCommandStatus.Failed,
+            _ => AccessCommandStatus.Applied
+        };
     }
 }

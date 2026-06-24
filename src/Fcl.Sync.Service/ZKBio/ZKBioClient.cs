@@ -34,15 +34,23 @@ public sealed class ZKBioClient : IZKBioClient
 
     public async Task<AccessApplyResult> ApplyPersonAsync(AccessPersonCommand command, CancellationToken cancellationToken)
     {
-        var current = await GetPersonAsync(command.Pin, cancellationToken);
-
-        if (current is not null && Matches(command, current))
+        try
         {
-            return AccessApplyResult.Skipped("ZKBio person already matches desired state.");
-        }
+            var current = await GetPersonAsync(command.Pin, cancellationToken);
 
-        await UpsertPersonAsync(command, cancellationToken);
-        return AccessApplyResult.Applied(current is null ? "Created ZKBio person." : "Updated ZKBio person.");
+            if (current is not null && Matches(command, current))
+            {
+                return AccessApplyResult.Skipped("ZKBio person already matches desired state.");
+            }
+
+            var message = await UpsertPersonAsync(command, cancellationToken);
+            return AccessApplyResult.Applied(message ?? (current is null ? "Created ZKBio person." : "Updated ZKBio person."));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "ZKBio failed to apply PIN {Pin}.", command.Pin);
+            return AccessApplyResult.Failed(ex.Message);
+        }
     }
 
     public async Task<IReadOnlyDictionary<string, AccessApplyResult>> ApplyPeopleAsync(
@@ -57,21 +65,31 @@ public sealed class ZKBioClient : IZKBioClient
 
         foreach (var command in commands)
         {
-            currentPeople.TryGetValue(command.Pin, out var current);
-
-            if (current is not null && Matches(command, current))
+            try
             {
-                results[command.Pin] = AccessApplyResult.Skipped("ZKBio person already matches desired state.");
-                continue;
-            }
+                currentPeople.TryGetValue(command.Pin, out var current);
 
-            await UpsertPersonAsync(command, cancellationToken);
-            results[command.Pin] = AccessApplyResult.Applied(current is null ? "Created ZKBio person." : "Updated ZKBio person.");
-            processedCount++;
+                if (current is not null && Matches(command, current))
+                {
+                    results[command.Pin] = AccessApplyResult.Skipped("ZKBio person already matches desired state.");
+                    processedCount++;
+                    continue;
+                }
+
+                var message = await UpsertPersonAsync(command, cancellationToken);
+                results[command.Pin] = AccessApplyResult.Applied(message ?? (current is null ? "Created ZKBio person." : "Updated ZKBio person."));
+                processedCount++;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                results[command.Pin] = AccessApplyResult.Failed(ex.Message);
+                processedCount++;
+                logger.LogWarning(ex, "ZKBio failed to apply PIN {Pin}; continuing with the next person.", command.Pin);
+            }
 
             if (processedCount % 100 == 0)
             {
-                logger.LogInformation("ZKBio upsert progress: {ProcessedCount}/{CommandCount} changed people processed.", processedCount, commands.Count);
+                logger.LogInformation("ZKBio apply progress: {ProcessedCount}/{CommandCount} people processed.", processedCount, commands.Count);
             }
         }
 
@@ -155,9 +173,43 @@ public sealed class ZKBioClient : IZKBioClient
         return results;
     }
 
-    private async Task UpsertPersonAsync(AccessPersonCommand command, CancellationToken cancellationToken)
+    private async Task<string?> UpsertPersonAsync(AccessPersonCommand command, CancellationToken cancellationToken)
     {
-        var payload = ZKBioPersonPayload.From(command);
+        var payload = ZKBioPersonPayload.From(command, includeEmail: true);
+        var result = await SendUpsertAsync(command.Pin, payload, cancellationToken);
+
+        if (result is not null && result.Code < 0 && IsDuplicateEmailError(result))
+        {
+            logger.LogWarning(
+                "ZKBio rejected PIN {Pin} because the mailbox already exists. Retrying without email so access can still sync.",
+                command.Pin);
+
+            var retryPayload = ZKBioPersonPayload.From(command, includeEmail: false);
+            var retryResult = await SendUpsertAsync(command.Pin, retryPayload, cancellationToken);
+
+            if (retryResult is not null && retryResult.Code < 0)
+            {
+                throw new InvalidOperationException($"ZKBio upsert person {command.Pin} API error {retryResult.Code}: {retryResult.Message}");
+            }
+
+            logger.LogInformation("ZKBio accepted upsert for PIN {Pin} without email.", command.Pin);
+            return "Updated ZKBio person without email because the mailbox already exists.";
+        }
+
+        if (result is not null && result.Code < 0)
+        {
+            throw new InvalidOperationException($"ZKBio upsert person {command.Pin} API error {result.Code}: {result.Message}");
+        }
+
+        logger.LogInformation("ZKBio accepted upsert for PIN {Pin}.", command.Pin);
+        return null;
+    }
+
+    private async Task<ZKBioApiResponse<object>?> SendUpsertAsync(
+        string pin,
+        ZKBioPersonPayload payload,
+        CancellationToken cancellationToken)
+    {
         var json = JsonSerializer.Serialize(payload, JsonOptions);
 
         using var content = new StringContent(json, Encoding.UTF8, "application/json");
@@ -166,17 +218,17 @@ public sealed class ZKBioClient : IZKBioClient
 
         if (!response.IsSuccessStatusCode)
         {
-            throw new HttpRequestException($"ZKBio upsert person {command.Pin} returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
+            throw new HttpRequestException($"ZKBio upsert person {pin} returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
         }
 
-        var result = JsonSerializer.Deserialize<ZKBioApiResponse<object>>(body, JsonOptions);
+        return JsonSerializer.Deserialize<ZKBioApiResponse<object>>(body, JsonOptions);
+    }
 
-        if (result is not null && result.Code < 0)
-        {
-            throw new InvalidOperationException($"ZKBio upsert person {command.Pin} API error {result.Code}: {result.Message}");
-        }
-
-        logger.LogInformation("ZKBio accepted upsert for PIN {Pin}.", command.Pin);
+    private static bool IsDuplicateEmailError(ZKBioApiResponse<object> result)
+    {
+        return result.Code == -71 ||
+               result.Message?.Contains("mailbox already exists", StringComparison.OrdinalIgnoreCase) == true ||
+               result.Message?.Contains("email already exists", StringComparison.OrdinalIgnoreCase) == true;
     }
 
     private static bool Matches(AccessPersonCommand desired, ZKBioPerson current)
@@ -341,7 +393,7 @@ internal sealed record ZKBioPersonPayload
     [JsonPropertyName("joindate")]
     public string? JoinDate { get; init; }
 
-    public static ZKBioPersonPayload From(AccessPersonCommand command)
+    public static ZKBioPersonPayload From(AccessPersonCommand command, bool includeEmail)
     {
         return new ZKBioPersonPayload
         {
@@ -351,7 +403,7 @@ internal sealed record ZKBioPersonPayload
             AccessLevelIds = command.AccessLevelIds,
             DepartmentCode = command.DepartmentCode,
             IsDisabled = command.IsDisabled,
-            Email = command.Email,
+            Email = includeEmail ? command.Email : null,
             MobilePhone = command.MobilePhone,
             JoinDate = command.JoinDate?.ToString("O")
         };
