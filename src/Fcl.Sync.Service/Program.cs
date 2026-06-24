@@ -1,11 +1,14 @@
 using Fcl.Sync.Service.AccessControl;
 using Fcl.Sync.Service.AccessProviders;
+using Fcl.Sync.Service;
 using Fcl.Sync.Service.GymMaster;
 using Fcl.Sync.Service.Health;
 using Fcl.Sync.Service.Persistence;
 using Fcl.Sync.Service.Reconciliation;
 using Fcl.Sync.Service.Webhooks;
 using Fcl.Sync.Service.ZKBio;
+
+LocalEnv.Load();
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -18,6 +21,14 @@ builder.Services.AddOptions<GymMasterWebhookOptions>()
     .Bind(builder.Configuration.GetSection(GymMasterWebhookOptions.SectionName))
     .ValidateDataAnnotations()
     .ValidateOnStart();
+
+builder.Services.AddOptions<GymMasterOptions>()
+    .Bind(builder.Configuration.GetSection(GymMasterOptions.SectionName))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+builder.Services.AddOptions<ZKBioOptions>()
+    .Bind(builder.Configuration.GetSection(ZKBioOptions.SectionName));
 
 builder.Services.AddOptions<ReconciliationOptions>()
     .Bind(builder.Configuration.GetSection(ReconciliationOptions.SectionName))
@@ -35,8 +46,20 @@ builder.Services.AddOptions<AccessProviderOptions>()
     .ValidateOnStart();
 
 builder.Services.AddSingleton<IAccessPolicy, GymAccessPolicy>();
-builder.Services.AddSingleton<IGymMasterClient, PlaceholderGymMasterClient>();
-builder.Services.AddSingleton<IZKBioClient, PlaceholderZKBioClient>();
+builder.Services.AddHttpClient<IGymMasterClient, GymMasterClient>();
+builder.Services.AddHttpClient<IZKBioClient, ZKBioClient>()
+    .ConfigurePrimaryHttpMessageHandler(sp =>
+    {
+        var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<ZKBioOptions>>().Value;
+        var handler = new HttpClientHandler();
+
+        if (options.AllowInvalidServerCertificate)
+        {
+            handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+        }
+
+        return handler;
+    });
 builder.Services.AddSingleton<NoopAccessProvider>();
 builder.Services.AddSingleton<ZKBioAccessProvider>();
 builder.Services.AddSingleton<IAccessProvider, ConfiguredAccessProvider>();

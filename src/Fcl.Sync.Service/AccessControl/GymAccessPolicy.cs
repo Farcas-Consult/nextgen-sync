@@ -10,7 +10,7 @@ public sealed class GymAccessPolicy : IAccessPolicy
 
     public AccessDecision Decide(GymMasterMember member)
     {
-        var hasValidMembership = member.Owing <= 0 && string.Equals(member.Status, "Current", StringComparison.OrdinalIgnoreCase);
+        var hasValidMembership = member.Owing <= 0 && IsCurrent(member.Status);
 
         if (!hasValidMembership)
         {
@@ -23,5 +23,11 @@ public sealed class GymAccessPolicy : IAccessPolicy
         }
 
         return new AccessDecision(MensAccessLevelId, false, "1", "Current male or unspecified-gender member.");
+    }
+
+    private static bool IsCurrent(string? status)
+    {
+        return string.Equals(status, "Current", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(status, "current", StringComparison.OrdinalIgnoreCase);
     }
 }
