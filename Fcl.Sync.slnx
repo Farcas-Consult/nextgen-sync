@@ -1,0 +1,5 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Fcl.Sync.Service/Fcl.Sync.Service.csproj" />
+  </Folder>
+</Solution>
