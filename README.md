@@ -50,29 +50,19 @@ Provider selection is lazy. A non-ZKBio deployment can use `Noop` or a future pr
 
 ## GymMaster
 
-Gatekeeper API config:
+Portal API config:
 
 ```json
 {
   "GymMaster": {
     "SiteName": "nextgen",
     "ApiKey": "your-api-key",
-    "GatekeeperBaseUrl": "https://nextgen.gymmasteronline.com/gatekeeper_api/v2",
-    "PortalMembersUrl": "https://nextgen.gymmasteronline.com/portal/api/v1/members?api_key=your-api-key",
-    "MaxSyncPages": 100,
-    "StaffApi": {
-      "Enabled": false,
-      "BaseUrl": "https://nextgen.gymmasteronline.com",
-      "AuthorizationScheme": "Basic",
-      "AuthorizationValue": ""
-    }
+    "PortalMembersUrl": "https://nextgen.gymmasteronline.com/portal/api/v1/members?api_key=your-api-key"
   }
 }
 ```
 
-The service prefers the Portal API `GET /portal/api/v1/members` for both webhook member lookup and hourly reconciliation because it returns member profile details in `result`. If `PortalMembersUrl` is blank, the service derives it from `GymMaster:SiteName` and `GymMaster:ApiKey`. The legacy `GMS_API_URL` env var is also supported.
-
-When `StaffApi:Enabled` is true, the service also calls `GET /member/{memberid}` to enrich profile fields before saving to SQLite and sending the access command. If `AuthorizationValue` is blank, the staff call reuses the Gatekeeper Basic Auth credentials. Keep this disabled until the correct staff API base URL/auth is confirmed.
+The service uses the Portal API `GET /portal/api/v1/members` for both webhook member lookup and hourly reconciliation because it returns member profile details in `result`. If `PortalMembersUrl` is blank, the service derives it from `GymMaster:SiteName` and `GymMaster:ApiKey`. The legacy `GMS_API_URL` env var is also supported.
 
 ## ZKBio
 
@@ -114,6 +104,5 @@ Tables created automatically:
 
 Before live testing, confirm:
 
-- Real `GymMaster:SiteName`, `GymMaster:ApiKey`, and `GymMaster:GatekeeperBaseUrl`.
+- Real `GymMaster:SiteName` and `GymMaster:ApiKey`, or `GymMaster:PortalMembersUrl`.
 - Real `ZKBio:BaseUrl` and `ZKBio:AccessToken` for the site.
-- Whether the staff API accepts the same Basic Auth as Gatekeeper. If not, set `GymMaster:StaffApi:AuthorizationScheme` and `GymMaster:StaffApi:AuthorizationValue`.

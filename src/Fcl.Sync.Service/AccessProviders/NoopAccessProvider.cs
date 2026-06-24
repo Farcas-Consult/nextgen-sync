@@ -6,7 +6,7 @@ public sealed class NoopAccessProvider(ILogger<NoopAccessProvider> logger) : IAc
 
     public Task ApplyAsync(AccessPersonCommand command, CancellationToken cancellationToken)
     {
-        logger.LogInformation("Noop access provider accepted command for PIN {Pin}.", command.Pin);
+        logger.LogDebug("Noop access provider accepted command for PIN {Pin}.", command.Pin);
         return Task.CompletedTask;
     }
 }
