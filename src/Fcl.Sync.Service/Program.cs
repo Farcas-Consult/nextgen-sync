@@ -1,6 +1,7 @@
 using Fcl.Sync.Service.AccessControl;
 using Fcl.Sync.Service.AccessProviders;
 using Fcl.Sync.Service;
+using Fcl.Sync.Service.Dashboard;
 using Fcl.Sync.Service.GymMaster;
 using Fcl.Sync.Service.Health;
 using Fcl.Sync.Service.Persistence;
@@ -63,7 +64,9 @@ builder.Services.AddHttpClient<IZKBioClient, ZKBioClient>()
 builder.Services.AddSingleton<NoopAccessProvider>();
 builder.Services.AddSingleton<ZKBioAccessProvider>();
 builder.Services.AddSingleton<IAccessProvider, ConfiguredAccessProvider>();
-builder.Services.AddSingleton<ILocalSyncStore, SqliteLocalSyncStore>();
+builder.Services.AddSingleton<SqliteLocalSyncStore>();
+builder.Services.AddSingleton<ILocalSyncStore>(sp => sp.GetRequiredService<SqliteLocalSyncStore>());
+builder.Services.AddSingleton<ISyncDashboardStore>(sp => sp.GetRequiredService<SqliteLocalSyncStore>());
 builder.Services.AddSingleton<GymMasterWebhookHandler>();
 builder.Services.AddHostedService<HourlyReconciliationWorker>();
 
@@ -73,10 +76,12 @@ app.MapGet("/", () => Results.Ok(new
 {
     service = "FCL Sync",
     runtime = ".NET 10",
-    status = "running"
+    status = "running",
+    dashboard = "/dashboard"
 }));
 
 app.MapHealthEndpoints();
+app.MapSyncDashboardEndpoints();
 app.MapGymMasterWebhookEndpoints();
 
 app.Run();

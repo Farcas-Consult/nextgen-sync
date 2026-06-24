@@ -1,6 +1,7 @@
 using System.Data;
 using System.Text.Json;
 using Fcl.Sync.Service.AccessControl;
+using Fcl.Sync.Service.Dashboard;
 using Fcl.Sync.Service.GymMaster;
 using Fcl.Sync.Service.Webhooks;
 using Microsoft.Data.Sqlite;
@@ -8,7 +9,7 @@ using Microsoft.Extensions.Options;
 
 namespace Fcl.Sync.Service.Persistence;
 
-public sealed class SqliteLocalSyncStore : ILocalSyncStore
+public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string connectionString;
@@ -257,6 +258,141 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore
         command.Parameters.AddWithValue("$created_at", DateTimeOffset.UtcNow.ToString("O"));
 
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<SyncDashboardSnapshot> GetDashboardSnapshotAsync(CancellationToken cancellationToken)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var latestSyncRun = await GetLatestSyncRunAsync(connection, cancellationToken);
+        var latestCommandCounts = latestSyncRun is null
+            ? []
+            : await GetCommandCountsAsync(connection, "created_at >= $started_at", latestSyncRun.StartedAt, cancellationToken);
+
+        return new SyncDashboardSnapshot(
+            GeneratedAt: DateTimeOffset.UtcNow,
+            MemberCount: await GetScalarIntAsync(connection, "SELECT COUNT(*) FROM members;", cancellationToken),
+            WebhookEventCount: await GetScalarIntAsync(connection, "SELECT COUNT(*) FROM webhook_events;", cancellationToken),
+            PendingCommandCount: await GetScalarIntAsync(connection, "SELECT COUNT(*) FROM access_commands WHERE status = 'Pending';", cancellationToken),
+            FailedCommandCount: await GetScalarIntAsync(connection, "SELECT COUNT(*) FROM access_commands WHERE status = 'Failed';", cancellationToken),
+            LatestSyncRun: latestSyncRun,
+            LatestCommandCounts: latestCommandCounts,
+            AllCommandCounts: await GetCommandCountsAsync(connection, null, null, cancellationToken),
+            RecentSyncRuns: await GetRecentSyncRunsAsync(connection, cancellationToken),
+            RecentErrors: await GetRecentErrorsAsync(connection, cancellationToken));
+    }
+
+    private static async Task<SyncRunSummary?> GetLatestSyncRunAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, started_at, completed_at, members_checked
+            FROM sync_runs
+            ORDER BY id DESC
+            LIMIT 1;
+            """;
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken)
+            ? ReadSyncRun(reader)
+            : null;
+    }
+
+    private static async Task<IReadOnlyList<SyncRunSummary>> GetRecentSyncRunsAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, started_at, completed_at, members_checked
+            FROM sync_runs
+            ORDER BY id DESC
+            LIMIT 5;
+            """;
+
+        var runs = new List<SyncRunSummary>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            runs.Add(ReadSyncRun(reader));
+        }
+
+        return runs;
+    }
+
+    private static async Task<IReadOnlyList<CommandStatusCount>> GetCommandCountsAsync(
+        SqliteConnection connection,
+        string? whereClause,
+        DateTimeOffset? startedAt,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = whereClause is null
+            ? """
+                SELECT status, COUNT(*)
+                FROM access_commands
+                GROUP BY status
+                ORDER BY status;
+                """
+            : $"""
+                SELECT status, COUNT(*)
+                FROM access_commands
+                WHERE {whereClause}
+                GROUP BY status
+                ORDER BY status;
+                """;
+
+        if (startedAt is not null)
+        {
+            command.Parameters.AddWithValue("$started_at", startedAt.Value.ToString("O"));
+        }
+
+        var counts = new List<CommandStatusCount>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            counts.Add(new CommandStatusCount(reader.GetString(0), reader.GetInt32(1)));
+        }
+
+        return counts;
+    }
+
+    private static async Task<IReadOnlyList<IntegrationErrorSummary>> GetRecentErrorsAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT source, message, created_at
+            FROM integration_errors
+            ORDER BY id DESC
+            LIMIT 10;
+            """;
+
+        var errors = new List<IntegrationErrorSummary>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            errors.Add(new IntegrationErrorSummary(
+                reader.GetString(0),
+                reader.GetString(1),
+                DateTimeOffset.Parse(reader.GetString(2))));
+        }
+
+        return errors;
+    }
+
+    private static async Task<int> GetScalarIntAsync(SqliteConnection connection, string commandText, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = commandText;
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
+    }
+
+    private static SyncRunSummary ReadSyncRun(SqliteDataReader reader)
+    {
+        return new SyncRunSummary(
+            reader.GetInt64(0),
+            DateTimeOffset.Parse(reader.GetString(1)),
+            DateTimeOffset.Parse(reader.GetString(2)),
+            reader.GetInt32(3));
     }
 
     private async Task EnsureInitializedAsync(CancellationToken cancellationToken)

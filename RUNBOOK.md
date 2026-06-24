@@ -46,6 +46,28 @@ The service runs one reconciliation immediately at startup, then repeats every h
 
 Stop it with `Ctrl+C` after the first sync completes.
 
+## Dashboard
+
+Open the local dashboard while the service is running:
+
+```text
+http://127.0.0.1:5050/dashboard
+```
+
+It refreshes every 30 seconds and shows:
+
+- members currently stored in SQLite
+- latest sync start/completion time, duration, and members checked
+- latest access command outcomes: `Applied`, `Skipped`, `Failed`, or `Pending`
+- recent sync runs
+- recent integration errors
+
+The same data is available as JSON:
+
+```text
+http://127.0.0.1:5050/api/dashboard
+```
+
 ## Verify SQLite
 
 The default database path is:
