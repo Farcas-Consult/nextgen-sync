@@ -515,6 +515,85 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
         }
     }
 
+    public async Task CleanupHistoryAsync(HistoryRetentionOptions options, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        if (!options.Enabled)
+        {
+            return;
+        }
+
+        await EnsureInitializedAsync(cancellationToken);
+        await writeGate.WaitAsync(cancellationToken);
+
+        try
+        {
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+
+            var commandCutoff = now.AddDays(-options.AccessCommandRetentionDays);
+            var failedCommandCutoff = now.AddDays(-options.FailedAccessCommandRetentionDays);
+            var webhookCutoff = now.AddDays(-options.WebhookRetentionDays);
+            var syncRunCutoff = now.AddDays(-options.SyncRunRetentionDays);
+            var errorCutoff = now.AddDays(-options.IntegrationErrorRetentionDays);
+
+            await ExecuteCleanupCommandAsync(connection, """
+                DELETE FROM access_commands
+                WHERE status <> 'Pending'
+                  AND created_at < $command_cutoff
+                  AND ($keep_latest = 0 OR id NOT IN (
+                      SELECT MAX(id)
+                      FROM access_commands
+                      GROUP BY pin
+                  ))
+                  AND NOT (status = 'Failed' AND created_at >= $failed_command_cutoff);
+                """, cancellationToken, command =>
+            {
+                command.Parameters.AddWithValue("$command_cutoff", commandCutoff.ToString("O"));
+                command.Parameters.AddWithValue("$failed_command_cutoff", failedCommandCutoff.ToString("O"));
+                command.Parameters.AddWithValue("$keep_latest", options.KeepLatestAccessCommandPerPin ? 1 : 0);
+            });
+
+            await ExecuteCleanupCommandAsync(connection, """
+                DELETE FROM webhook_events
+                WHERE received_at < $webhook_cutoff;
+                """, cancellationToken, command =>
+            {
+                command.Parameters.AddWithValue("$webhook_cutoff", webhookCutoff.ToString("O"));
+            });
+
+            await ExecuteCleanupCommandAsync(connection, """
+                DELETE FROM sync_runs
+                WHERE started_at < $sync_run_cutoff;
+                """, cancellationToken, command =>
+            {
+                command.Parameters.AddWithValue("$sync_run_cutoff", syncRunCutoff.ToString("O"));
+            });
+
+            await ExecuteCleanupCommandAsync(connection, """
+                DELETE FROM integration_errors
+                WHERE created_at < $error_cutoff;
+                """, cancellationToken, command =>
+            {
+                command.Parameters.AddWithValue("$error_cutoff", errorCutoff.ToString("O"));
+            });
+
+            if (options.VacuumAfterCleanup)
+            {
+                await ExecuteCleanupCommandAsync(connection, "PRAGMA wal_checkpoint(TRUNCATE);", cancellationToken);
+                await ExecuteCleanupCommandAsync(connection, "VACUUM;", cancellationToken);
+                await ExecuteCleanupCommandAsync(connection, "PRAGMA wal_checkpoint(TRUNCATE);", cancellationToken);
+            }
+
+            logger.LogInformation(
+                "Cleaned local SQLite history. Command retention: {AccessCommandRetentionDays} days; failed command retention: {FailedAccessCommandRetentionDays} days.",
+                options.AccessCommandRetentionDays,
+                options.FailedAccessCommandRetentionDays);
+        }
+        finally
+        {
+            writeGate.Release();
+        }
+    }
+
     public async Task<SyncDashboardSnapshot> GetDashboardSnapshotAsync(CancellationToken cancellationToken)
     {
         await EnsureInitializedAsync(cancellationToken);
@@ -828,6 +907,18 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
         catch (SqliteException ex) when (ex.SqliteErrorCode == 1 && ex.Message.Contains("duplicate column name", StringComparison.OrdinalIgnoreCase))
         {
         }
+    }
+
+    private static async Task ExecuteCleanupCommandAsync(
+        SqliteConnection connection,
+        string commandText,
+        CancellationToken cancellationToken,
+        Action<SqliteCommand>? configure = null)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = commandText;
+        configure?.Invoke(command);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private async Task<SqliteConnection> OpenConnectionAsync(CancellationToken cancellationToken)

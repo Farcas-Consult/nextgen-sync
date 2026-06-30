@@ -41,6 +41,11 @@ builder.Services.AddOptions<SqliteOptions>()
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
+builder.Services.AddOptions<HistoryRetentionOptions>()
+    .Bind(builder.Configuration.GetSection(HistoryRetentionOptions.SectionName))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
 builder.Services.AddOptions<AccessProviderOptions>()
     .Bind(builder.Configuration.GetSection(AccessProviderOptions.SectionName))
     .ValidateDataAnnotations()

@@ -24,6 +24,15 @@ Reconciliation__AccessProviderTimeoutMinutes=20
 Reconciliation__FullAuditIntervalHours=24
 Reconciliation__FullAuditOnStartup=true
 Reconciliation__ZKBioCacheMaxAgeHours=24
+HistoryRetention__Enabled=true
+HistoryRetention__CleanupIntervalHours=24
+HistoryRetention__AccessCommandRetentionDays=0
+HistoryRetention__KeepLatestAccessCommandPerPin=true
+HistoryRetention__FailedAccessCommandRetentionDays=30
+HistoryRetention__WebhookRetentionDays=30
+HistoryRetention__SyncRunRetentionDays=30
+HistoryRetention__IntegrationErrorRetentionDays=90
+HistoryRetention__VacuumAfterCleanup=true
 ```
 
 `GymMaster__PortalMembersUrl` is optional if `GymMaster__SiteName` and `GymMaster__ApiKey` are set. The service will derive:
@@ -185,6 +194,33 @@ Check latest command outcomes:
 sqlite3 src/Fcl.Sync.Service/bin/Debug/net10.0/data/fcl-sync.db \
   "select status, count(*) from access_commands where created_at >= (select started_at from sync_runs order by id desc limit 1) group by status order by status;"
 ```
+
+## Database Retention
+
+The service automatically cleans history after startup and then at the configured interval. It keeps current state in `members` and `zkbio_people`, and only prunes old audit/history rows:
+
+```text
+access_commands
+webhook_events
+sync_runs
+integration_errors
+```
+
+Recommended production settings:
+
+```text
+HistoryRetention__Enabled=true
+HistoryRetention__CleanupIntervalHours=24
+HistoryRetention__AccessCommandRetentionDays=0
+HistoryRetention__KeepLatestAccessCommandPerPin=true
+HistoryRetention__FailedAccessCommandRetentionDays=30
+HistoryRetention__WebhookRetentionDays=30
+HistoryRetention__SyncRunRetentionDays=30
+HistoryRetention__IntegrationErrorRetentionDays=90
+HistoryRetention__VacuumAfterCleanup=true
+```
+
+`Pending` access commands are never deleted by retention cleanup. With `HistoryRetention__KeepLatestAccessCommandPerPin=true`, the latest command for each PIN is also kept so the dashboard still has a current command snapshot. Older failed commands are kept for `HistoryRetention__FailedAccessCommandRetentionDays` so recent provider issues remain inspectable.
 
 ## Install As Windows Service
 

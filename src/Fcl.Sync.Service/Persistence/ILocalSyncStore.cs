@@ -46,4 +46,6 @@ public interface ILocalSyncStore
         CancellationToken cancellationToken);
 
     Task RecordIntegrationErrorAsync(string source, string message, string? details, CancellationToken cancellationToken);
+
+    Task CleanupHistoryAsync(HistoryRetentionOptions options, DateTimeOffset now, CancellationToken cancellationToken);
 }

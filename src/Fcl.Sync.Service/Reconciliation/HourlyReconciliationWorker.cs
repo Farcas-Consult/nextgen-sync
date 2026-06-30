@@ -8,6 +8,7 @@ namespace Fcl.Sync.Service.Reconciliation;
 
 public sealed class HourlyReconciliationWorker(
     IOptions<ReconciliationOptions> options,
+    IOptions<HistoryRetentionOptions> historyRetentionOptions,
     IGymMasterClient gymMasterClient,
     IAccessPolicy accessPolicy,
     ILocalSyncStore store,
@@ -17,6 +18,7 @@ public sealed class HourlyReconciliationWorker(
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         DateTimeOffset? lastFullAuditAt = null;
+        DateTimeOffset? lastHistoryCleanupAt = null;
 
         using var timer = new PeriodicTimer(TimeSpan.FromHours(options.Value.IntervalHours));
 
@@ -30,6 +32,9 @@ public sealed class HourlyReconciliationWorker(
             await RunOnceAsync(SyncRunMode.Fast, stoppingToken);
         }
 
+        await CleanupHistoryIfDueAsync(lastHistoryCleanupAt, stoppingToken);
+        lastHistoryCleanupAt = DateTimeOffset.UtcNow;
+
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
             var shouldRunFullAudit = lastFullAuditAt is null ||
@@ -39,10 +44,44 @@ public sealed class HourlyReconciliationWorker(
             {
                 await RunOnceAsync(SyncRunMode.FullAudit, stoppingToken);
                 lastFullAuditAt = DateTimeOffset.UtcNow;
-                continue;
+            }
+            else
+            {
+                await RunOnceAsync(SyncRunMode.Fast, stoppingToken);
             }
 
-            await RunOnceAsync(SyncRunMode.Fast, stoppingToken);
+            if (await CleanupHistoryIfDueAsync(lastHistoryCleanupAt, stoppingToken))
+            {
+                lastHistoryCleanupAt = DateTimeOffset.UtcNow;
+            }
+        }
+    }
+
+    private async Task<bool> CleanupHistoryIfDueAsync(DateTimeOffset? lastCleanupAt, CancellationToken cancellationToken)
+    {
+        var retention = historyRetentionOptions.Value;
+
+        if (!retention.Enabled)
+        {
+            return false;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        if (lastCleanupAt is not null &&
+            now - lastCleanupAt.Value < TimeSpan.FromHours(retention.CleanupIntervalHours))
+        {
+            return false;
+        }
+
+        try
+        {
+            await store.CleanupHistoryAsync(retention, now, cancellationToken);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "SQLite history cleanup failed; sync will continue and cleanup will retry later.");
+            return false;
         }
     }
 

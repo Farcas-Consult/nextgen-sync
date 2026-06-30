@@ -87,4 +87,10 @@ public sealed class InMemoryLocalSyncStore(ILogger<InMemoryLocalSyncStore> logge
         logger.LogError("Integration error from {Source}: {Message}. {Details}", source, message, details);
         return Task.CompletedTask;
     }
+
+    public Task CleanupHistoryAsync(HistoryRetentionOptions options, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        logger.LogInformation("Skipped history cleanup for in-memory store.");
+        return Task.CompletedTask;
+    }
 }
