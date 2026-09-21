@@ -37,15 +37,24 @@ builder.Services.AddOptions<BioStarOptions>()
     .ValidateDataAnnotations()
     .Validate(options =>
         !string.Equals(builder.Configuration[$"{AccessProviderOptions.SectionName}:Type"], "BioStar", StringComparison.OrdinalIgnoreCase) ||
-        !string.IsNullOrWhiteSpace(options.BaseUrl) &&
-        !string.IsNullOrWhiteSpace(options.LoginId) &&
-        !string.IsNullOrWhiteSpace(options.Password) &&
-        !string.IsNullOrWhiteSpace(options.UserGroupId) &&
-        !string.IsNullOrWhiteSpace(options.AccessGroupId) &&
-        options.ExpiryDateTime > options.StartDateTime &&
-        options.ExpiryDateTime > DateTimeOffset.UtcNow.AddMonths(6) &&
+        !string.IsNullOrWhiteSpace(options.BaseUrl),
+        "Selected BioStar provider requires BioStar:BaseUrl.")
+    .Validate(options =>
+        !string.Equals(builder.Configuration[$"{AccessProviderOptions.SectionName}:Type"], "BioStar", StringComparison.OrdinalIgnoreCase) ||
+        !string.IsNullOrWhiteSpace(options.LoginId) && !string.IsNullOrWhiteSpace(options.Password),
+        "Selected BioStar provider requires BioStar:LoginId and BioStar:Password.")
+    .Validate(options =>
+        !string.Equals(builder.Configuration[$"{AccessProviderOptions.SectionName}:Type"], "BioStar", StringComparison.OrdinalIgnoreCase) ||
+        !string.IsNullOrWhiteSpace(options.UserGroupId) && !string.IsNullOrWhiteSpace(options.AccessGroupId),
+        "Selected BioStar provider requires BioStar:UserGroupId and BioStar:AccessGroupId.")
+    .Validate(options =>
+        !string.Equals(builder.Configuration[$"{AccessProviderOptions.SectionName}:Type"], "BioStar", StringComparison.OrdinalIgnoreCase) ||
+        options.ExpiryDateTime > options.StartDateTime && options.ExpiryDateTime > DateTimeOffset.UtcNow.AddMonths(6),
+        "BioStar:ExpiryDateTime must be later than StartDateTime and at least six months in the future.")
+    .Validate(options =>
+        !string.Equals(builder.Configuration[$"{AccessProviderOptions.SectionName}:Type"], "BioStar", StringComparison.OrdinalIgnoreCase) ||
         options.CompanyIds.Count == 1 && options.CompanyIds.Contains(3),
-        "Selected BioStar provider requires a base URL, credentials, group IDs, an expiry at least six months in the future, and company scope exactly [3].")
+        "This BioStar installation requires BioStar:CompanyIds to contain exactly company 3.")
     .ValidateOnStart();
 
 builder.Services.AddOptions<DashboardOptions>()
