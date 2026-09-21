@@ -103,6 +103,7 @@ public sealed class GymMasterClient : IGymMasterClient
 
     private static GymMasterMember Map(PortalMember source)
     {
+        var hasValidOwing = source.TryGetOwingValue(out var owing);
         return new GymMasterMember
         {
             MemberId = source.Id ?? throw new InvalidOperationException("GymMaster portal member payload did not include id."),
@@ -111,7 +112,8 @@ public sealed class GymMasterClient : IGymMasterClient
             Surname = source.Surname,
             Gender = source.Gender,
             Status = source.Status,
-            Owing = source.OwingValue,
+            Owing = owing,
+            HasValidOwing = hasValidOwing,
             Email = source.Email,
             MobilePhone = source.PhoneCell,
             JoinDate = source.JoinDate
@@ -160,20 +162,22 @@ internal sealed record PortalMember
     [JsonPropertyName("companyid")]
     public long? CompanyId { get; init; }
 
-    public decimal OwingValue
+    public bool TryGetOwingValue(out decimal value)
     {
-        get
+        if (string.IsNullOrWhiteSpace(Owing))
         {
-            if (string.IsNullOrWhiteSpace(Owing))
-            {
-                return 0;
-            }
-
-            var cleaned = new string(Owing.Where(c => char.IsDigit(c) || c is '.' or '-' or '+').ToArray());
-
-            return decimal.TryParse(cleaned, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var value)
-                ? value
-                : 0;
+            value = 0;
+            return false;
         }
+
+        var cleaned = new string(Owing.Where(c => char.IsDigit(c) || c is '.' or '-' or '+').ToArray());
+        if (string.IsNullOrWhiteSpace(cleaned))
+        {
+            value = 0;
+            return false;
+        }
+
+        return decimal.TryParse(cleaned, System.Globalization.NumberStyles.Number,
+            System.Globalization.CultureInfo.InvariantCulture, out value);
     }
 }

@@ -64,13 +64,16 @@ Provider selection is lazy. A non-ZKBio deployment can use `Noop` or a future pr
     "StartDateTime": "2001-01-01T00:00:00Z",
     "ExpiryDateTime": "2030-12-31T23:59:00Z",
     "AllowInvalidServerCertificate": true,
-    "CompanyIds": []
+    "UseNumericUserIdWhenPossible": true,
+    "MaxNameLength": 48,
+    "MaxEmailLength": 128,
+    "CompanyIds": [3]
   }
 }
 ```
 
 The client uses `/api/login`, retains the `bs-session-id` without logging it, retries once after an expired session, and supports the BioStar response shapes used by the supplied JavaScript.
-By default, BioStar processes all GymMaster members. Configure `BioStar:CompanyIds` only when an installation must be restricted to selected companies.
+BioStar processes only GymMaster company `3` for this branch. This prevents members belonging to other gym branches from being created or updated on this BioStar installation.
 
 ## GymMaster
 

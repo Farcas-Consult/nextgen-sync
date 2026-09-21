@@ -25,7 +25,7 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
         this.logger = logger;
     }
 
-    public async Task<bool> TryRecordWebhookAsync(GymMasterWebhookEvent webhookEvent, CancellationToken cancellationToken)
+    public async Task<WebhookBeginResult> TryBeginWebhookAsync(GymMasterWebhookEvent webhookEvent, CancellationToken cancellationToken)
     {
         await EnsureInitializedAsync(cancellationToken);
         await writeGate.WaitAsync(cancellationToken);
@@ -33,7 +33,9 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
         try
         {
             await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
             await using var command = connection.CreateCommand();
+            command.Transaction = (SqliteTransaction)transaction;
             command.CommandText = """
                 INSERT OR IGNORE INTO webhook_events (
                     event_id,
@@ -43,7 +45,8 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
                     member_id,
                     company_id,
                     raw_payload,
-                    received_at
+                    received_at,
+                    status
                 )
                 VALUES (
                     $event_id,
@@ -53,7 +56,8 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
                     $member_id,
                     $company_id,
                     $raw_payload,
-                    $received_at
+                    $received_at,
+                    'Received'
                 );
                 """;
 
@@ -66,14 +70,115 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
             command.Parameters.AddWithValue("$raw_payload", JsonSerializer.Serialize(webhookEvent, JsonOptions));
             command.Parameters.AddWithValue("$received_at", DateTimeOffset.UtcNow.ToString("O"));
 
-            var inserted = await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+            await command.ExecuteNonQueryAsync(cancellationToken);
 
-            if (!inserted)
+            command.Parameters.Clear();
+            command.CommandText = """
+                UPDATE webhook_events
+                SET status = 'Failed', error_message = 'Processing lease expired before completion.', completed_at = $now
+                WHERE event_id = $event_id
+                  AND status = 'Processing'
+                  AND (started_at IS NULL OR started_at < $lease_cutoff);
+                """;
+            command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+            command.Parameters.AddWithValue("$lease_cutoff", DateTimeOffset.UtcNow.AddMinutes(-30).ToString("O"));
+            command.Parameters.AddWithValue("$event_id", webhookEvent.EventId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+
+            command.Parameters.Clear();
+            command.CommandText = """
+                SELECT status
+                FROM webhook_events
+                WHERE event_id = $event_id;
+                """;
+            command.Parameters.AddWithValue("$event_id", webhookEvent.EventId);
+            var currentStatus = (string?)await command.ExecuteScalarAsync(cancellationToken) ?? WebhookProcessingStatus.Received.ToString();
+
+            if (currentStatus == WebhookProcessingStatus.Completed.ToString())
             {
-                logger.LogInformation("Ignoring duplicate webhook event {EventId}.", webhookEvent.EventId);
+                await transaction.CommitAsync(cancellationToken);
+                return WebhookBeginResult.AlreadyCompleted;
             }
 
-            return inserted;
+            if (currentStatus == WebhookProcessingStatus.Processing.ToString())
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return WebhookBeginResult.AlreadyProcessing;
+            }
+
+            if (webhookEvent.Payload.MemberId is long memberId)
+            {
+                command.Parameters.Clear();
+                command.CommandText = """
+                    SELECT 1
+                    FROM webhook_events
+                    WHERE member_id = $member_id
+                      AND status = 'Completed'
+                      AND event_timestamp > $event_timestamp
+                    LIMIT 1;
+                    """;
+                command.Parameters.AddWithValue("$member_id", memberId);
+                command.Parameters.AddWithValue("$event_timestamp", webhookEvent.EventTimestamp.ToString("O"));
+                if (await command.ExecuteScalarAsync(cancellationToken) is not null)
+                {
+                    command.Parameters.Clear();
+                    command.CommandText = """
+                        UPDATE webhook_events
+                        SET status = 'Completed', completed_at = $completed_at,
+                            error_message = 'Skipped because a newer webhook for this member already completed.'
+                        WHERE event_id = $event_id;
+                        """;
+                    command.Parameters.AddWithValue("$completed_at", DateTimeOffset.UtcNow.ToString("O"));
+                    command.Parameters.AddWithValue("$event_id", webhookEvent.EventId);
+                    await command.ExecuteNonQueryAsync(cancellationToken);
+                    await transaction.CommitAsync(cancellationToken);
+                    return WebhookBeginResult.Stale;
+                }
+            }
+
+            command.Parameters.Clear();
+            command.CommandText = """
+                UPDATE webhook_events
+                SET status = 'Processing', attempt_count = attempt_count + 1,
+                    error_message = NULL, started_at = $started_at, completed_at = NULL
+                WHERE event_id = $event_id;
+                """;
+            command.Parameters.AddWithValue("$started_at", DateTimeOffset.UtcNow.ToString("O"));
+            command.Parameters.AddWithValue("$event_id", webhookEvent.EventId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return WebhookBeginResult.Started;
+        }
+        finally
+        {
+            writeGate.Release();
+        }
+    }
+
+    public async Task MarkWebhookAsync(
+        long eventId,
+        WebhookProcessingStatus status,
+        string? errorMessage,
+        CancellationToken cancellationToken)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+        await writeGate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                UPDATE webhook_events
+                SET status = $status,
+                    error_message = $error_message,
+                    completed_at = CASE WHEN $status IN ('Completed', 'Failed') THEN $now ELSE completed_at END
+                WHERE event_id = $event_id;
+                """;
+            command.Parameters.AddWithValue("$status", status.ToString());
+            command.Parameters.AddWithValue("$error_message", (object?)errorMessage ?? DBNull.Value);
+            command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+            command.Parameters.AddWithValue("$event_id", eventId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
         }
         finally
         {
@@ -514,18 +619,46 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
 
             await ExecuteCleanupCommandAsync(connection, """
                 DELETE FROM access_commands
-                WHERE status <> 'Pending'
+                WHERE status NOT IN ('Pending', 'Failed')
                   AND created_at < $command_cutoff
                   AND ($keep_latest = 0 OR id NOT IN (
                       SELECT MAX(id)
                       FROM access_commands
                       GROUP BY provider_name, pin
-                  ))
-                  AND NOT (status = 'Failed' AND created_at >= $failed_command_cutoff);
+                  ));
                 """, cancellationToken, command =>
             {
                 command.Parameters.AddWithValue("$command_cutoff", commandCutoff.ToString("O"));
+                command.Parameters.AddWithValue("$keep_latest", options.KeepLatestAccessCommandPerPin ? 1 : 0);
+            });
+
+            await ExecuteCleanupCommandAsync(connection, """
+                DELETE FROM access_commands
+                WHERE status = 'Failed'
+                  AND id IN (
+                      SELECT id
+                      FROM (
+                          SELECT id,
+                                 created_at,
+                                 ROW_NUMBER() OVER (
+                                     PARTITION BY provider_name, pin
+                                     ORDER BY id DESC
+                                 ) AS failure_rank
+                          FROM access_commands
+                          WHERE status = 'Failed'
+                      ) ranked
+                      WHERE created_at < $failed_command_cutoff
+                         OR failure_rank > $max_failed_per_pin
+                  )
+                  AND ($keep_latest = 0 OR id NOT IN (
+                      SELECT MAX(id)
+                      FROM access_commands
+                      GROUP BY provider_name, pin
+                  ));
+                """, cancellationToken, command =>
+            {
                 command.Parameters.AddWithValue("$failed_command_cutoff", failedCommandCutoff.ToString("O"));
+                command.Parameters.AddWithValue("$max_failed_per_pin", options.MaxFailedAccessCommandsPerPin);
                 command.Parameters.AddWithValue("$keep_latest", options.KeepLatestAccessCommandPerPin ? 1 : 0);
             });
 
@@ -561,9 +694,10 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
             }
 
             logger.LogInformation(
-                "Cleaned local SQLite history. Command retention: {AccessCommandRetentionDays} days; failed command retention: {FailedAccessCommandRetentionDays} days.",
+                "Cleaned local SQLite history. Command retention: {AccessCommandRetentionDays} days; failed command retention: {FailedAccessCommandRetentionDays} days, max {MaxFailedPerPin} per provider/PIN.",
                 options.AccessCommandRetentionDays,
-                options.FailedAccessCommandRetentionDays);
+                options.FailedAccessCommandRetentionDays,
+                options.MaxFailedAccessCommandsPerPin);
         }
         finally
         {
@@ -765,7 +899,12 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
                     member_id INTEGER NULL,
                     company_id INTEGER NULL,
                     raw_payload TEXT NOT NULL,
-                    received_at TEXT NOT NULL
+                    received_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'Received',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    error_message TEXT NULL,
+                    started_at TEXT NULL,
+                    completed_at TEXT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS members (
@@ -815,6 +954,18 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
                 """;
 
             await command.ExecuteNonQueryAsync(cancellationToken);
+
+            await ExecuteSchemaCommandAsync(
+                connection,
+                "ALTER TABLE webhook_events ADD COLUMN status TEXT NOT NULL DEFAULT 'Completed';",
+                cancellationToken);
+            await ExecuteSchemaCommandAsync(
+                connection,
+                "ALTER TABLE webhook_events ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 1;",
+                cancellationToken);
+            await ExecuteSchemaCommandAsync(connection, "ALTER TABLE webhook_events ADD COLUMN error_message TEXT NULL;", cancellationToken);
+            await ExecuteSchemaCommandAsync(connection, "ALTER TABLE webhook_events ADD COLUMN started_at TEXT NULL;", cancellationToken);
+            await ExecuteSchemaCommandAsync(connection, "ALTER TABLE webhook_events ADD COLUMN completed_at TEXT NULL;", cancellationToken);
 
             await ExecuteSchemaCommandAsync(
                 connection,

@@ -11,6 +11,9 @@ cp .env.example .env
 Set the real values in `.env`:
 
 ```bash
+ASPNETCORE_URLS=http://0.0.0.0:5050
+Dashboard__AllowRemoteAccess=false
+
 GymMaster__SiteName=nextgen
 GymMaster__ApiKey=your-gymmaster-api-key
 GymMaster__PortalMembersUrl=https://nextgen.gymmasteronline.com/portal/api/v1/members?api_key=your-gymmaster-api-key
@@ -28,7 +31,10 @@ BioStar__AccessGroupId=3
 BioStar__StartDateTime=2001-01-01T00:00:00Z
 BioStar__ExpiryDateTime=2030-12-31T23:59:00Z
 BioStar__AllowInvalidServerCertificate=true
-# BioStar__CompanyIds__0=3  # optional restriction
+BioStar__UseNumericUserIdWhenPossible=true
+BioStar__MaxNameLength=48
+BioStar__MaxEmailLength=128
+BioStar__CompanyIds__0=3
 Reconciliation__AccessProviderTimeoutMinutes=20
 Reconciliation__FullAuditIntervalHours=24
 Reconciliation__FullAuditOnStartup=true
@@ -38,6 +44,7 @@ HistoryRetention__CleanupIntervalHours=24
 HistoryRetention__AccessCommandRetentionDays=0
 HistoryRetention__KeepLatestAccessCommandPerPin=true
 HistoryRetention__FailedAccessCommandRetentionDays=30
+HistoryRetention__MaxFailedAccessCommandsPerPin=5
 HistoryRetention__WebhookRetentionDays=30
 HistoryRetention__SyncRunRetentionDays=30
 HistoryRetention__IntegrationErrorRetentionDays=90
@@ -174,7 +181,7 @@ The production sync order is:
 8. Skip people that already match
 9. Create/update missing or changed people through the provider API
 10. Update the provider-specific local cache after successful confirmation
-11. Record Applied, Skipped, or Failed status independently per provider
+11. Record Applied, Skipped, or Failed status for the selected provider
 ```
 
 The service does not delete ZKBio people.
@@ -186,8 +193,8 @@ If ZKBio rejects a person because the mailbox/email already exists, the service 
 There are two reconciliation modes:
 
 ```text
-Fast      - hourly, uses local ZKBio cache fingerprints to avoid unnecessary ZKBio calls
-FullAudit - slower confirmation pass, refreshes the ZKBio cache and guarantees freshness
+Fast      - hourly, uses local provider confirmation fingerprints to avoid unnecessary API calls
+FullAudit - slower confirmation pass, refreshes the provider cache and guarantees freshness
 ```
 
 The full audit cadence is controlled by:
@@ -232,6 +239,7 @@ HistoryRetention__CleanupIntervalHours=24
 HistoryRetention__AccessCommandRetentionDays=0
 HistoryRetention__KeepLatestAccessCommandPerPin=true
 HistoryRetention__FailedAccessCommandRetentionDays=30
+HistoryRetention__MaxFailedAccessCommandsPerPin=5
 HistoryRetention__WebhookRetentionDays=30
 HistoryRetention__SyncRunRetentionDays=30
 HistoryRetention__IntegrationErrorRetentionDays=90
@@ -262,6 +270,15 @@ Create `C:\FclSync\.env` with the production settings. The SQLite database shoul
 ```text
 Sqlite__ConnectionString=Data Source=C:\FclSync\data\fcl-sync.db
 ```
+
+Restrict the configuration file so ordinary Windows users cannot read integration credentials:
+
+```cmd
+icacls C:\FclSync\.env /inheritance:r
+icacls C:\FclSync\.env /grant:r "SYSTEM:R" "Administrators:R"
+```
+
+The dashboard defaults to local-machine access only even when the webhook listener binds to `0.0.0.0`. Keep `Dashboard__AllowRemoteAccess=false` unless an authenticated reverse proxy protects it.
 
 Install the Windows service from an Administrator PowerShell:
 

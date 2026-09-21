@@ -70,10 +70,29 @@ public sealed class BioStarClient : IBioStarClient
             return results;
         }
 
-        foreach (var command in commands)
+        for (var index = 0; index < commands.Count; index++)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            results[command.Pin] = await ApplyPersonAsync(command, cancellationToken);
+            var command = commands[index];
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                results[command.Pin] = await ApplyPersonAsync(command, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Return completed results so the caller can persist confirmed progress. Mark
+                // the untouched suffix explicitly; it remains eligible for a future retry.
+                for (var remaining = index; remaining < commands.Count; remaining++)
+                {
+                    results[commands[remaining].Pin] = AccessApplyResult.Failed(
+                        "BioStar batch was cancelled before this member was processed.");
+                }
+                logger.LogWarning(
+                    "BioStar batch was cancelled after completing {CompletedCount} of {TotalCount} members.",
+                    index,
+                    commands.Count);
+                break;
+            }
         }
 
         return results;
@@ -88,13 +107,17 @@ public sealed class BioStarClient : IBioStarClient
             return AccessApplyResult.Applied("Created BioStar user.");
         }
 
-        if (current.Disabled == command.IsDisabled)
+        if (current.Disabled == command.IsDisabled &&
+            string.Equals(current.UserGroupId, options.UserGroupId, StringComparison.Ordinal) &&
+            current.AccessGroupIds.Count == 1 &&
+            current.AccessGroupIds.Contains(options.AccessGroupId, StringComparer.Ordinal) &&
+            (current.ExpiryDateTime is null || DatesMatch(current.ExpiryDateTime.Value, options.ExpiryDateTime)))
         {
-            return AccessApplyResult.Skipped("BioStar user already has the desired status.");
+            return AccessApplyResult.Skipped("BioStar user already has the desired status and groups.");
         }
 
         await UpdateUserAsync(command, current.Shape, cancellationToken);
-        return AccessApplyResult.Applied("Updated BioStar user status.");
+        return AccessApplyResult.Applied("Updated BioStar user status, groups, and validity.");
     }
 
     private async Task<BioStarUserState?> GetUserAsync(string pin, CancellationToken cancellationToken)
@@ -117,6 +140,8 @@ public sealed class BioStarClient : IBioStarClient
                 $"BioStar get user {pin} returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
         }
 
+        EnsureSuccessfulApplicationResponse(body, $"get user {pin}");
+
         using var document = JsonDocument.Parse(body);
         var root = document.RootElement;
         var shape = BioStarResponseShape.Direct;
@@ -134,7 +159,24 @@ public sealed class BioStarClient : IBioStarClient
         }
 
         var disabled = TryGetPropertyIgnoreCase(user, "disabled", out var value) && IsTrue(value);
-        return new BioStarUserState(disabled, shape);
+        var userGroupId = ReadIdProperty(user, "user_group_id") ?? ReadIdProperty(root, "user_group_id");
+        var accessGroupsContainer = user;
+        if (!TryGetPropertyIgnoreCase(user, "access_groups", out _) &&
+            TryGetPropertyIgnoreCase(root, "access_groups", out _))
+        {
+            accessGroupsContainer = root;
+        }
+        var accessGroupIds = ReadIdArray(accessGroupsContainer, "access_groups");
+        DateTimeOffset? expiry = null;
+        var hasExpiry = TryGetPropertyIgnoreCase(user, "expiry_datetime", out var expiryValue) ||
+            TryGetPropertyIgnoreCase(root, "expiry_datetime", out expiryValue);
+        if (hasExpiry &&
+            expiryValue.ValueKind == JsonValueKind.String &&
+            DateTimeOffset.TryParse(expiryValue.GetString(), out var parsedExpiry))
+        {
+            expiry = parsedExpiry;
+        }
+        return new BioStarUserState(disabled, userGroupId, accessGroupIds, expiry, shape);
     }
 
     private static bool IsUserNotFound(string body)
@@ -162,13 +204,14 @@ public sealed class BioStarClient : IBioStarClient
 
     private async Task CreateUserAsync(AccessPersonCommand command, CancellationToken cancellationToken)
     {
-        var name = SanitizeName(command.Name);
+        var name = SanitizeAndLimit(command.Name, options.MaxNameLength);
         if (string.IsNullOrWhiteSpace(name))
         {
             throw new InvalidOperationException($"BioStar user {command.Pin} cannot be created without a name.");
         }
 
         var userId = ToBioStarUserId(command.Pin);
+        var email = SanitizeEmail(command.Email, command.Pin);
 
         var payload = new Dictionary<string, object>
         {
@@ -176,7 +219,7 @@ public sealed class BioStarClient : IBioStarClient
             {
                 user_id = userId,
                 name,
-                email = string.IsNullOrWhiteSpace(command.Email) ? $"user{command.Pin}@gym.local" : command.Email.Trim(),
+                email,
                 start_datetime = FormatDate(options.StartDateTime),
                 expiry_datetime = FormatDate(options.ExpiryDateTime),
                 user_group_id = new { id = options.UserGroupId },
@@ -186,7 +229,7 @@ public sealed class BioStarClient : IBioStarClient
         };
 
         using var response = await SendAsync(HttpMethod.Post, "api/users", payload, cancellationToken);
-        await ReadSuccessfulBodyAsync(response, $"create user {command.Pin}", cancellationToken);
+        await ReadSuccessfulBodyAsync(response, $"create user {command.Pin} ({Describe(command, name, email)})", cancellationToken);
         logger.LogInformation("Created BioStar user {Pin}.", command.Pin);
     }
 
@@ -203,12 +246,20 @@ public sealed class BioStarClient : IBioStarClient
                 {
                     user_id = userId,
                     disabled = command.IsDisabled,
+                    expiry_datetime = FormatDate(options.ExpiryDateTime),
+                    user_group_id = new { id = options.UserGroupId },
                     access_groups = new[] { new { id = options.AccessGroupId } }
                 }
             }
             : new
             {
-                user = new { user_id = userId, disabled = command.IsDisabled },
+                user = new
+                {
+                    user_id = userId,
+                    disabled = command.IsDisabled,
+                    expiry_datetime = FormatDate(options.ExpiryDateTime),
+                    user_group_id = new { id = options.UserGroupId }
+                },
                 access_groups = new[] { new { id = options.AccessGroupId } }
             };
 
@@ -217,7 +268,7 @@ public sealed class BioStarClient : IBioStarClient
             $"api/users/{Uri.EscapeDataString(command.Pin)}",
             payload,
             cancellationToken);
-        await ReadSuccessfulBodyAsync(response, $"update user {command.Pin}", cancellationToken);
+        await ReadSuccessfulBodyAsync(response, $"update user {command.Pin} ({Describe(command, null, null)})", cancellationToken);
         logger.LogInformation("Updated BioStar user {Pin}; disabled={Disabled}.", command.Pin, command.IsDisabled);
     }
 
@@ -230,7 +281,8 @@ public sealed class BioStarClient : IBioStarClient
         await EnsureAuthenticatedAsync(cancellationToken);
         var response = await SendOnceAsync(method, relativeUrl, payload, sessionId!, cancellationToken);
 
-        if (response.StatusCode is not (HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden))
+        if (response.StatusCode is not (HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden) &&
+            !await IsExpiredSessionResponseAsync(response, cancellationToken))
         {
             return response;
         }
@@ -285,6 +337,8 @@ public sealed class BioStarClient : IBioStarClient
                 throw new HttpRequestException($"BioStar authentication returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
             }
 
+            EnsureSuccessfulApplicationResponse(body, "authentication");
+
             if (!response.Headers.TryGetValues("bs-session-id", out var values) ||
                 string.IsNullOrWhiteSpace(sessionId = values.FirstOrDefault()))
             {
@@ -309,7 +363,53 @@ public sealed class BioStarClient : IBioStarClient
         {
             throw new HttpRequestException($"BioStar {operation} returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
         }
+        EnsureSuccessfulApplicationResponse(body, operation);
         return body;
+    }
+
+    private static void EnsureSuccessfulApplicationResponse(string body, string operation)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return;
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            if (!TryGetPropertyIgnoreCase(document.RootElement, "Response", out var response) ||
+                !TryGetPropertyIgnoreCase(response, "code", out var code)) return;
+
+            var value = code.ValueKind == JsonValueKind.String ? code.GetString() : code.GetRawText();
+            if (string.IsNullOrWhiteSpace(value) || value is "0" or "200") return;
+            var message = TryGetPropertyIgnoreCase(response, "message", out var messageElement)
+                ? messageElement.ToString() : "Unknown BioStar application error";
+            throw new HttpRequestException($"BioStar {operation} returned application code {value}: {message}");
+        }
+        catch (JsonException)
+        {
+            // Some successful BioStar operations return an empty or non-JSON body.
+        }
+    }
+
+    private static async Task<bool> IsExpiredSessionResponseAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(body)) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            if (!TryGetPropertyIgnoreCase(document.RootElement, "Response", out var result)) return false;
+            var code = TryGetPropertyIgnoreCase(result, "code", out var codeValue) ? codeValue.ToString() : "";
+            var message = TryGetPropertyIgnoreCase(result, "message", out var value) ? value.ToString() : "";
+            return code is "401" or "403" ||
+                   (message.Contains("session", StringComparison.OrdinalIgnoreCase) &&
+                    (message.Contains("expire", StringComparison.OrdinalIgnoreCase) ||
+                     message.Contains("invalid", StringComparison.OrdinalIgnoreCase) ||
+                     message.Contains("not found", StringComparison.OrdinalIgnoreCase))) ||
+                   message.Contains("login required", StringComparison.OrdinalIgnoreCase) ||
+                   message.Contains("not logged", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static bool TryGetPropertyIgnoreCase(JsonElement element, string name, out JsonElement value)
@@ -337,16 +437,66 @@ public sealed class BioStarClient : IBioStarClient
         _ => false
     };
 
-    private static string SanitizeName(string value) => value.Replace("'", "", StringComparison.Ordinal)
-        .Replace("`", "", StringComparison.Ordinal)
-        .Trim();
+    private static string SanitizeAndLimit(string value, int maxLength)
+    {
+        var sanitized = new string(value.Where(c => !char.IsControl(c) && c is not '\'' and not '`').ToArray()).Trim();
+        return sanitized.Length <= maxLength ? sanitized : sanitized[..maxLength].TrimEnd();
+    }
 
-    private static object ToBioStarUserId(string pin) =>
-        long.TryParse(pin, out var numericId) ? numericId : pin;
+    private string SanitizeEmail(string? value, string pin)
+    {
+        var fallback = $"user{pin}@gym.local";
+        var candidate = string.IsNullOrWhiteSpace(value)
+            ? fallback
+            : new string(value.Trim().Where(c => !char.IsControl(c) && !char.IsWhiteSpace(c)).ToArray());
+        if (!candidate.Contains('@') || candidate.Length > options.MaxEmailLength)
+        {
+            candidate = fallback;
+        }
+        if (candidate.Length > options.MaxEmailLength)
+        {
+            throw new InvalidOperationException($"BioStar fallback email for PIN {pin} exceeds the configured maximum length.");
+        }
+        return candidate;
+    }
+
+    private object ToBioStarUserId(string pin) =>
+        options.UseNumericUserIdWhenPossible && long.TryParse(pin, out var numericId) ? numericId : pin;
 
     private static string FormatDate(DateTimeOffset value) => value.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.00'Z'");
 
-    private sealed record BioStarUserState(bool Disabled, BioStarResponseShape Shape);
+    private static string? ReadIdProperty(JsonElement element, string propertyName)
+    {
+        if (!TryGetPropertyIgnoreCase(element, propertyName, out var property)) return null;
+        if (property.ValueKind == JsonValueKind.Object && TryGetPropertyIgnoreCase(property, "id", out var id))
+            return id.ToString();
+        return property.ValueKind is JsonValueKind.String or JsonValueKind.Number ? property.ToString() : null;
+    }
+
+    private static IReadOnlyList<string> ReadIdArray(JsonElement element, string propertyName)
+    {
+        if (!TryGetPropertyIgnoreCase(element, propertyName, out var array) || array.ValueKind != JsonValueKind.Array)
+            return [];
+        return array.EnumerateArray().Select(item =>
+                item.ValueKind == JsonValueKind.Object && TryGetPropertyIgnoreCase(item, "id", out var id)
+                    ? id.ToString() : item.ToString())
+            .Where(id => !string.IsNullOrWhiteSpace(id)).ToArray();
+    }
+
+    private static bool DatesMatch(DateTimeOffset actual, DateTimeOffset desired) =>
+        Math.Abs((actual.ToUniversalTime() - desired.ToUniversalTime()).TotalSeconds) < 1;
+
+    private string Describe(AccessPersonCommand command, string? name, string? email) =>
+        $"pin={command.Pin}, disabled={command.IsDisabled}, userGroup={options.UserGroupId}, " +
+        $"accessGroup={options.AccessGroupId}, nameLength={name?.Length.ToString() ?? "unchanged"}, " +
+        $"emailLength={email?.Length.ToString() ?? "unchanged"}";
+
+    private sealed record BioStarUserState(
+        bool Disabled,
+        string? UserGroupId,
+        IReadOnlyList<string> AccessGroupIds,
+        DateTimeOffset? ExpiryDateTime,
+        BioStarResponseShape Shape);
 
     private enum BioStarResponseShape
     {

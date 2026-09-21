@@ -9,6 +9,7 @@ public sealed record GymMasterMember
     public string? Gender { get; init; }
     public string? Status { get; init; }
     public decimal Owing { get; init; }
+    public bool HasValidOwing { get; init; } = true;
     public string? Email { get; init; }
     public string? MobilePhone { get; init; }
     public DateOnly? JoinDate { get; init; }

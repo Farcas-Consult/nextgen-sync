@@ -4,7 +4,8 @@ namespace Fcl.Sync.Service.AccessProviders;
 
 public sealed class ConfiguredAccessProvider(
     IOptions<AccessProviderOptions> options,
-    IServiceProvider serviceProvider) : IBulkAccessProvider, IAccessProviderStateHasher, IAccessProviderMemberFilter
+    IServiceProvider serviceProvider,
+    ILogger<ConfiguredAccessProvider> logger) : IBulkAccessProvider, IAccessProviderStateHasher, IAccessProviderMemberFilter
 {
     public string Name => Current.Name;
 
@@ -17,22 +18,50 @@ public sealed class ConfiguredAccessProvider(
             $"Unknown access provider '{unknown}'. Supported values: ZKBio, BioStar, Noop.")
     };
 
-    public Task<AccessApplyResult> ApplyAsync(AccessPersonCommand command, CancellationToken cancellationToken) =>
-        Current.ApplyAsync(command, cancellationToken);
+    public async Task<AccessApplyResult> ApplyAsync(AccessPersonCommand command, CancellationToken cancellationToken)
+    {
+        return await MemberSyncLock.ExecuteIfCurrentAsync(
+            command.Pin,
+            command.GeneratedAt,
+            () => Current.ApplyAsync(command, cancellationToken),
+            cancellationToken)
+            ?? AccessApplyResult.Superseded("Superseded by a newer member update.");
+    }
 
     public async Task<IReadOnlyDictionary<string, AccessApplyResult>> ApplyBatchAsync(
         IReadOnlyList<AccessPersonCommand> commands,
         CancellationToken cancellationToken)
     {
-        if (Current is IBulkAccessProvider bulkProvider)
+        if (Current is IBulkAccessProvider bulkProvider && Current is not BioStarAccessProvider)
         {
             return await bulkProvider.ApplyBatchAsync(commands, cancellationToken);
         }
 
         var results = new Dictionary<string, AccessApplyResult>(StringComparer.Ordinal);
-        foreach (var command in commands)
+        for (var index = 0; index < commands.Count; index++)
         {
-            results[command.Pin] = await Current.ApplyAsync(command, cancellationToken);
+            var command = commands[index];
+            try
+            {
+                results[command.Pin] = await ApplyAsync(command, cancellationToken);
+                if ((index + 1) % 100 == 0)
+                {
+                    logger.LogInformation(
+                        "{ProviderName} reconciliation progress: {CompletedCount}/{TotalCount} members processed.",
+                        Name,
+                        index + 1,
+                        commands.Count);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                for (var remaining = index; remaining < commands.Count; remaining++)
+                {
+                    results[commands[remaining].Pin] = AccessApplyResult.Failed(
+                        "Provider batch was cancelled before this member was processed.");
+                }
+                break;
+            }
         }
         return results;
     }

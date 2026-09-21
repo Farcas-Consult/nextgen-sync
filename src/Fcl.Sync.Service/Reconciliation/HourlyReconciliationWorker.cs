@@ -29,6 +29,7 @@ public sealed class HourlyReconciliationWorker(
         else
         {
             await RunOnceAsync(SyncRunMode.Fast, stoppingToken);
+            lastFullAuditAt = DateTimeOffset.UtcNow;
         }
 
         await CleanupHistoryIfDueAsync(lastHistoryCleanupAt, stoppingToken);
@@ -73,7 +74,8 @@ public sealed class HourlyReconciliationWorker(
 
     private async Task RunOnceAsync(SyncRunMode mode, CancellationToken cancellationToken)
     {
-        var syncRunId = await store.StartSyncRunAsync(mode, DateTimeOffset.UtcNow, cancellationToken);
+        var snapshotVersion = DateTimeOffset.UtcNow;
+        var syncRunId = await store.StartSyncRunAsync(mode, snapshotVersion, cancellationToken);
         var membersChecked = 0;
         var commandIdsByPin = new Dictionary<string, long>(StringComparer.Ordinal);
 
@@ -85,6 +87,12 @@ public sealed class HourlyReconciliationWorker(
 
             var fetchedMembers = await gymMasterClient.GetCurrentMembersAsync(cancellationToken);
             var members = fetchedMembers.Where(member => HandlesCompany(member.CompanyId)).ToList();
+            var duplicateMemberId = members.GroupBy(member => member.MemberId).FirstOrDefault(group => group.Count() > 1);
+            if (duplicateMemberId is not null)
+            {
+                throw new InvalidOperationException(
+                    $"GymMaster returned duplicate member ID {duplicateMemberId.Key} within the configured company scope.");
+            }
             membersChecked = members.Count;
             var commands = new List<AccessPersonCommand>(members.Count);
 
@@ -92,7 +100,7 @@ public sealed class HourlyReconciliationWorker(
             {
                 var decision = accessPolicy.Decide(member);
                 await store.UpsertMemberAsync(member, decision, cancellationToken);
-                var command = AccessPersonCommand.From(member, decision);
+                var command = AccessPersonCommand.From(member, decision) with { GeneratedAt = snapshotVersion };
                 commandIdsByPin[command.Pin] = await store.RecordAccessCommandAsync(
                     accessProvider.Name, command.Pin, command, cancellationToken);
                 commands.Add(command);
@@ -126,7 +134,7 @@ public sealed class HourlyReconciliationWorker(
                     await store.UpsertProviderCacheAsync(accessProvider.Name, accessProvider.Name, command.Pin,
                         GetDesiredHash(command), DateTimeOffset.UtcNow, cancellationToken);
                 }
-                else
+                else if (result.Outcome == AccessApplyOutcome.Failed)
                 {
                     failedCount++;
                 }
@@ -197,6 +205,7 @@ public sealed class HourlyReconciliationWorker(
     private static AccessCommandStatus ToCommandStatus(AccessApplyResult result) => result.Outcome switch
     {
         AccessApplyOutcome.Skipped => AccessCommandStatus.Skipped,
+        AccessApplyOutcome.Superseded => AccessCommandStatus.Skipped,
         AccessApplyOutcome.Failed => AccessCommandStatus.Failed,
         _ => AccessCommandStatus.Applied
     };

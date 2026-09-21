@@ -7,7 +7,13 @@ namespace Fcl.Sync.Service.Persistence;
 
 public interface ILocalSyncStore
 {
-    Task<bool> TryRecordWebhookAsync(GymMasterWebhookEvent webhookEvent, CancellationToken cancellationToken);
+    Task<WebhookBeginResult> TryBeginWebhookAsync(GymMasterWebhookEvent webhookEvent, CancellationToken cancellationToken);
+
+    Task MarkWebhookAsync(
+        long eventId,
+        WebhookProcessingStatus status,
+        string? errorMessage,
+        CancellationToken cancellationToken);
 
     Task UpsertMemberAsync(GymMasterMember member, AccessDecision accessDecision, CancellationToken cancellationToken);
 

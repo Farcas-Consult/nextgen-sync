@@ -7,10 +7,16 @@ namespace Fcl.Sync.Service.Persistence;
 
 public sealed class InMemoryLocalSyncStore(ILogger<InMemoryLocalSyncStore> logger) : ILocalSyncStore
 {
-    public Task<bool> TryRecordWebhookAsync(GymMasterWebhookEvent webhookEvent, CancellationToken cancellationToken)
+    public Task<WebhookBeginResult> TryBeginWebhookAsync(GymMasterWebhookEvent webhookEvent, CancellationToken cancellationToken)
     {
         logger.LogInformation("Recorded webhook {EventId} of type {EventType}.", webhookEvent.EventId, webhookEvent.EventType);
-        return Task.FromResult(true);
+        return Task.FromResult(WebhookBeginResult.Started);
+    }
+
+    public Task MarkWebhookAsync(long eventId, WebhookProcessingStatus status, string? errorMessage, CancellationToken cancellationToken)
+    {
+        logger.LogInformation("Marked webhook {EventId} as {Status}. {ErrorMessage}", eventId, status, errorMessage);
+        return Task.CompletedTask;
     }
 
     public Task UpsertMemberAsync(GymMasterMember member, AccessDecision accessDecision, CancellationToken cancellationToken)

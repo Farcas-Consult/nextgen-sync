@@ -19,6 +19,9 @@ public sealed class HistoryRetentionOptions
     [Range(1, 365)]
     public int FailedAccessCommandRetentionDays { get; init; } = 30;
 
+    [Range(1, 100)]
+    public int MaxFailedAccessCommandsPerPin { get; init; } = 5;
+
     [Range(1, 365)]
     public int WebhookRetentionDays { get; init; } = 30;
 

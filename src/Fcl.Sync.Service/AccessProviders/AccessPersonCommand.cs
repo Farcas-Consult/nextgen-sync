@@ -8,6 +8,7 @@ namespace Fcl.Sync.Service.AccessProviders;
 public sealed record AccessPersonCommand
 {
     public required string Pin { get; init; }
+    public DateTimeOffset GeneratedAt { get; init; }
     public long? CompanyId { get; init; }
     public required string Name { get; init; }
     public string? LastName { get; init; }
@@ -28,6 +29,7 @@ public sealed record AccessPersonCommand
         var command = new AccessPersonCommand
         {
             Pin = member.MemberId.ToString(),
+            GeneratedAt = DateTimeOffset.UtcNow,
             CompanyId = member.CompanyId,
             Name = string.IsNullOrWhiteSpace(fullName) ? member.MemberId.ToString() : fullName,
             LastName = member.Surname,

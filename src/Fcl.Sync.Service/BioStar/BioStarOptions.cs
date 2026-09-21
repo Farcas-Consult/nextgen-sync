@@ -27,5 +27,17 @@ public sealed class BioStarOptions
 
     public bool AllowInvalidServerCertificate { get; init; }
 
-    public IReadOnlyList<long> CompanyIds { get; init; } = [];
+    /// <summary>
+    /// Sends numeric member IDs as JSON numbers when possible. Set to false for BioStar
+    /// installations that require user_id to always be a JSON string.
+    /// </summary>
+    public bool UseNumericUserIdWhenPossible { get; init; } = true;
+
+    [Range(1, 255)]
+    public int MaxNameLength { get; init; } = 48;
+
+    [Range(3, 320)]
+    public int MaxEmailLength { get; init; } = 128;
+
+    public IReadOnlyList<long> CompanyIds { get; init; } = [3];
 }

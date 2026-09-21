@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using Microsoft.Extensions.Options;
 
 namespace Fcl.Sync.Service.Dashboard;
 
@@ -7,19 +8,33 @@ public static class DashboardEndpoints
 {
     public static IEndpointRouteBuilder MapSyncDashboardEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/dashboard", async (ISyncDashboardStore store, CancellationToken cancellationToken) =>
+        app.MapGet("/dashboard", async (HttpContext context, ISyncDashboardStore store, IOptions<DashboardOptions> options, CancellationToken cancellationToken) =>
         {
+            if (!CanAccess(context, options.Value))
+            {
+                return Results.NotFound();
+            }
             var snapshot = await store.GetDashboardSnapshotAsync(cancellationToken);
-            return Results.Content(RenderHtml(snapshot), "text/html; charset=utf-8");
+            return Results.Content(RenderHtml(snapshot), "text/html; charset=utf-8") as IResult;
         });
 
-        app.MapGet("/api/dashboard", async (ISyncDashboardStore store, CancellationToken cancellationToken) =>
+        app.MapGet("/api/dashboard", async (HttpContext context, ISyncDashboardStore store, IOptions<DashboardOptions> options, CancellationToken cancellationToken) =>
         {
+            if (!CanAccess(context, options.Value))
+            {
+                return Results.NotFound();
+            }
             var snapshot = await store.GetDashboardSnapshotAsync(cancellationToken);
-            return Results.Ok(snapshot);
+            return Results.Ok(snapshot) as IResult;
         });
 
         return app;
+    }
+
+    private static bool CanAccess(HttpContext context, DashboardOptions options)
+    {
+        var remoteAddress = context.Connection.RemoteIpAddress;
+        return options.AllowRemoteAccess || remoteAddress is null || IPAddress.IsLoopback(remoteAddress);
     }
 
     private static string RenderHtml(SyncDashboardSnapshot snapshot)

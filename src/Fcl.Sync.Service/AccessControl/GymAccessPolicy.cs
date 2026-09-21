@@ -6,11 +6,14 @@ public sealed class GymAccessPolicy : IAccessPolicy
 {
     public AccessDecision Decide(GymMasterMember member)
     {
-        var hasValidMembership = member.Owing <= 0 && IsCurrent(member.Status);
+        var hasValidMembership = member.HasValidOwing && member.Owing <= 0 && IsCurrent(member.Status);
 
         if (!hasValidMembership)
         {
-            return new AccessDecision("NoAccess", true, "Member is not current or has an outstanding balance.");
+            var reason = member.HasValidOwing
+                ? "Member is not current or has an outstanding balance."
+                : "Member balance is missing or invalid; access denied for safety.";
+            return new AccessDecision("NoAccess", true, reason);
         }
 
         if (string.Equals(member.Gender, "F", StringComparison.OrdinalIgnoreCase))

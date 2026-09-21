@@ -33,7 +33,23 @@ builder.Services.AddOptions<ZKBioOptions>()
     .Bind(builder.Configuration.GetSection(ZKBioOptions.SectionName));
 
 builder.Services.AddOptions<BioStarOptions>()
-    .Bind(builder.Configuration.GetSection(BioStarOptions.SectionName));
+    .Bind(builder.Configuration.GetSection(BioStarOptions.SectionName))
+    .ValidateDataAnnotations()
+    .Validate(options =>
+        !string.Equals(builder.Configuration[$"{AccessProviderOptions.SectionName}:Type"], "BioStar", StringComparison.OrdinalIgnoreCase) ||
+        !string.IsNullOrWhiteSpace(options.BaseUrl) &&
+        !string.IsNullOrWhiteSpace(options.LoginId) &&
+        !string.IsNullOrWhiteSpace(options.Password) &&
+        !string.IsNullOrWhiteSpace(options.UserGroupId) &&
+        !string.IsNullOrWhiteSpace(options.AccessGroupId) &&
+        options.ExpiryDateTime > options.StartDateTime &&
+        options.ExpiryDateTime > DateTimeOffset.UtcNow.AddMonths(6) &&
+        options.CompanyIds.Count == 1 && options.CompanyIds.Contains(3),
+        "Selected BioStar provider requires a base URL, credentials, group IDs, an expiry at least six months in the future, and company scope exactly [3].")
+    .ValidateOnStart();
+
+builder.Services.AddOptions<DashboardOptions>()
+    .Bind(builder.Configuration.GetSection(DashboardOptions.SectionName));
 
 builder.Services.AddOptions<ReconciliationOptions>()
     .Bind(builder.Configuration.GetSection(ReconciliationOptions.SectionName))

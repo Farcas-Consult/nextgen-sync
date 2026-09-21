@@ -7,11 +7,14 @@ public sealed record AccessApplyResult(AccessApplyOutcome Outcome, string? Messa
     public static AccessApplyResult Skipped(string? message = null) => new(AccessApplyOutcome.Skipped, message);
 
     public static AccessApplyResult Failed(string? message = null) => new(AccessApplyOutcome.Failed, message);
+
+    public static AccessApplyResult Superseded(string? message = null) => new(AccessApplyOutcome.Superseded, message);
 }
 
 public enum AccessApplyOutcome
 {
     Applied,
     Skipped,
-    Failed
+    Failed,
+    Superseded
 }

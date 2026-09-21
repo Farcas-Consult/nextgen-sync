@@ -2,4 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/Fcl.Sync.Service/Fcl.Sync.Service.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Fcl.Sync.Service.Tests/Fcl.Sync.Service.Tests.csproj" />
+  </Folder>
 </Solution>

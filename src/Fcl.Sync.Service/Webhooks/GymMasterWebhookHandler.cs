@@ -14,54 +14,67 @@ public sealed class GymMasterWebhookHandler(
 {
     public async Task HandleAsync(GymMasterWebhookEvent webhookEvent, CancellationToken cancellationToken)
     {
-        var isNewEvent = await store.TryRecordWebhookAsync(webhookEvent, cancellationToken);
+        var beginResult = await store.TryBeginWebhookAsync(webhookEvent, cancellationToken);
 
-        if (!isNewEvent)
-        {
-            return;
-        }
-
-        if (webhookEvent.Payload.MemberId is null)
+        if (beginResult != WebhookBeginResult.Started)
         {
             logger.LogInformation(
-                "Recorded GymMaster webhook {EventId} of type {EventType}; no member id was supplied.",
+                "Skipping GymMaster webhook {EventId}; persisted disposition is {Disposition}.",
                 webhookEvent.EventId,
-                webhookEvent.EventType);
+                beginResult);
             return;
         }
 
-        var member = await gymMasterClient.GetMemberAsync(
-            webhookEvent.Payload.MemberId.Value,
-            webhookEvent.Payload.CompanyId,
-            cancellationToken);
-
-        if (member is null)
-        {
-            logger.LogWarning(
-                "GymMaster member {MemberId} was not found while processing webhook {EventId}.",
-                webhookEvent.Payload.MemberId,
-                webhookEvent.EventId);
-            return;
-        }
-
-        if (accessProvider is IAccessProviderMemberFilter filter && !filter.HandlesCompany(member.CompanyId))
-        {
-            logger.LogInformation(
-                "Ignoring GymMaster webhook {EventId} because company {CompanyId} is not handled by {ProviderName}.",
-                webhookEvent.EventId,
-                member.CompanyId,
-                accessProvider.Name);
-            return;
-        }
-
-        var decision = accessPolicy.Decide(member);
-        await store.UpsertMemberAsync(member, decision, cancellationToken);
-
-        var command = AccessPersonCommand.From(member, decision);
-        var commandId = await store.RecordAccessCommandAsync(accessProvider.Name, command.Pin, command, cancellationToken);
         try
         {
-            var result = await accessProvider.ApplyAsync(command, cancellationToken);
+            if (webhookEvent.Payload.MemberId is null)
+            {
+                logger.LogInformation(
+                    "Recorded GymMaster webhook {EventId} of type {EventType}; no member id was supplied.",
+                    webhookEvent.EventId,
+                    webhookEvent.EventType);
+                await store.MarkWebhookAsync(webhookEvent.EventId, WebhookProcessingStatus.Completed, null, cancellationToken);
+                return;
+            }
+
+            var member = await gymMasterClient.GetMemberAsync(
+                webhookEvent.Payload.MemberId.Value,
+                webhookEvent.Payload.CompanyId,
+                cancellationToken);
+
+            if (member is null)
+            {
+                throw new InvalidOperationException(
+                    $"GymMaster member {webhookEvent.Payload.MemberId} was not found while processing webhook {webhookEvent.EventId}.");
+            }
+
+            if (accessProvider is IAccessProviderMemberFilter filter && !filter.HandlesCompany(member.CompanyId))
+            {
+                logger.LogInformation(
+                    "Ignoring GymMaster webhook {EventId} because company {CompanyId} is not handled by {ProviderName}.",
+                    webhookEvent.EventId,
+                    member.CompanyId,
+                    accessProvider.Name);
+                await store.MarkWebhookAsync(webhookEvent.EventId, WebhookProcessingStatus.Completed, null, cancellationToken);
+                return;
+            }
+
+            var decision = accessPolicy.Decide(member);
+            await store.UpsertMemberAsync(member, decision, cancellationToken);
+
+            var command = AccessPersonCommand.From(member, decision) with { GeneratedAt = webhookEvent.EventTimestamp };
+            var commandId = await store.RecordAccessCommandAsync(accessProvider.Name, command.Pin, command, cancellationToken);
+            AccessApplyResult result;
+            try
+            {
+                result = await accessProvider.ApplyAsync(command, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                await store.MarkAccessCommandAsync(commandId, AccessCommandStatus.Failed, ex.Message, CancellationToken.None);
+                throw;
+            }
+
             await store.MarkAccessCommandAsync(commandId, ToCommandStatus(result), result.Message, cancellationToken);
 
             if (result.Outcome is AccessApplyOutcome.Applied or AccessApplyOutcome.Skipped)
@@ -72,23 +85,26 @@ public sealed class GymMasterWebhookHandler(
                 await store.UpsertProviderCacheAsync(
                     accessProvider.Name, accessProvider.Name, command.Pin, desiredHash, DateTimeOffset.UtcNow, cancellationToken);
             }
-            else
+            else if (result.Outcome == AccessApplyOutcome.Failed)
             {
                 await store.RecordIntegrationErrorAsync(accessProvider.Name, result.Message ?? "Provider command failed.", null, cancellationToken);
+                throw new InvalidOperationException(result.Message ?? "Provider command failed.");
             }
+
+            await store.MarkWebhookAsync(webhookEvent.EventId, WebhookProcessingStatus.Completed, null, cancellationToken);
+
+            logger.LogInformation(
+                "Processed GymMaster webhook {EventId} for member {MemberId} through {ProviderName}.",
+                webhookEvent.EventId,
+                webhookEvent.Payload.MemberId,
+                accessProvider.Name);
         }
         catch (Exception ex)
         {
-            await store.MarkAccessCommandAsync(commandId, AccessCommandStatus.Failed, ex.Message, CancellationToken.None);
-            await store.RecordIntegrationErrorAsync(accessProvider.Name, ex.Message, ex.ToString(), CancellationToken.None);
+            await store.MarkWebhookAsync(webhookEvent.EventId, WebhookProcessingStatus.Failed, ex.Message, CancellationToken.None);
+            await store.RecordIntegrationErrorAsync("GymMasterWebhook", ex.Message, ex.ToString(), CancellationToken.None);
             throw;
         }
-
-        logger.LogInformation(
-            "Processed GymMaster webhook {EventId} for member {MemberId} through {ProviderName}.",
-            webhookEvent.EventId,
-            webhookEvent.Payload.MemberId,
-            accessProvider.Name);
     }
 
     private static AccessCommandStatus ToCommandStatus(AccessApplyResult result)
@@ -96,6 +112,7 @@ public sealed class GymMasterWebhookHandler(
         return result.Outcome switch
         {
             AccessApplyOutcome.Skipped => AccessCommandStatus.Skipped,
+            AccessApplyOutcome.Superseded => AccessCommandStatus.Skipped,
             AccessApplyOutcome.Failed => AccessCommandStatus.Failed,
             _ => AccessCommandStatus.Applied
         };
