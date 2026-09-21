@@ -168,11 +168,13 @@ public sealed class BioStarClient : IBioStarClient
             throw new InvalidOperationException($"BioStar user {command.Pin} cannot be created without a name.");
         }
 
+        var userId = ToBioStarUserId(command.Pin);
+
         var payload = new Dictionary<string, object>
         {
             ["User"] = new
             {
-                user_id = command.Pin,
+                user_id = userId,
                 name,
                 email = string.IsNullOrWhiteSpace(command.Email) ? $"user{command.Pin}@gym.local" : command.Email.Trim(),
                 start_datetime = FormatDate(options.StartDateTime),
@@ -193,19 +195,20 @@ public sealed class BioStarClient : IBioStarClient
         BioStarResponseShape shape,
         CancellationToken cancellationToken)
     {
+        var userId = ToBioStarUserId(command.Pin);
         object payload = shape == BioStarResponseShape.UppercaseUserWrapper
             ? new Dictionary<string, object>
             {
                 ["User"] = new
                 {
-                    user_id = command.Pin,
+                    user_id = userId,
                     disabled = command.IsDisabled,
                     access_groups = new[] { new { id = options.AccessGroupId } }
                 }
             }
             : new
             {
-                user = new { user_id = command.Pin, disabled = command.IsDisabled },
+                user = new { user_id = userId, disabled = command.IsDisabled },
                 access_groups = new[] { new { id = options.AccessGroupId } }
             };
 
@@ -337,6 +340,9 @@ public sealed class BioStarClient : IBioStarClient
     private static string SanitizeName(string value) => value.Replace("'", "", StringComparison.Ordinal)
         .Replace("`", "", StringComparison.Ordinal)
         .Trim();
+
+    private static object ToBioStarUserId(string pin) =>
+        long.TryParse(pin, out var numericId) ? numericId : pin;
 
     private static string FormatDate(DateTimeOffset value) => value.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.00'Z'");
 

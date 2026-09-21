@@ -62,7 +62,7 @@ Provider selection is lazy. A non-ZKBio deployment can use `Noop` or a future pr
     "UserGroupId": "1052",
     "AccessGroupId": "3",
     "StartDateTime": "2001-01-01T00:00:00Z",
-    "ExpiryDateTime": "2099-12-31T23:59:00Z",
+    "ExpiryDateTime": "2030-12-31T23:59:00Z",
     "AllowInvalidServerCertificate": true,
     "CompanyIds": []
   }

@@ -23,7 +23,7 @@ public sealed class BioStarOptions
 
     public DateTimeOffset StartDateTime { get; init; } = new(2001, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
-    public DateTimeOffset ExpiryDateTime { get; init; } = new(2099, 12, 31, 23, 59, 0, TimeSpan.Zero);
+    public DateTimeOffset ExpiryDateTime { get; init; } = new(2030, 12, 31, 23, 59, 0, TimeSpan.Zero);
 
     public bool AllowInvalidServerCertificate { get; init; }
 
