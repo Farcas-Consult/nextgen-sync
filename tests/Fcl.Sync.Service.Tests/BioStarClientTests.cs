@@ -120,8 +120,8 @@ public sealed class BioStarClientTests
         Assert.False(loginJson.RootElement.TryGetProperty("user", out _));
         using var createJson = JsonDocument.Parse(create.Body!);
         var user = createJson.RootElement.GetProperty("User");
-        Assert.Equal(JsonValueKind.Number, user.GetProperty("user_id").ValueKind);
-        Assert.Equal(292328, user.GetProperty("user_id").GetInt64());
+        Assert.Equal(JsonValueKind.String, user.GetProperty("user_id").ValueKind);
+        Assert.Equal("292328", user.GetProperty("user_id").GetString());
         Assert.Equal("1052", user.GetProperty("user_group_id").GetProperty("id").GetString());
         Assert.Equal("3", user.GetProperty("access_groups")[0].GetProperty("id").GetString());
     }
@@ -147,17 +147,75 @@ public sealed class BioStarClientTests
         Assert.Equal(0, createCount);
     }
 
-    private static BioStarClient CreateClient(HttpMessageHandler handler) => new(
-        new HttpClient(handler),
-        Options.Create(new BioStarOptions
+    [Fact]
+    public async Task DuplicateEmailRetriesCreationWithoutEmail()
+    {
+        var createBodies = new List<string>();
+        var handler = new StubHandler(async request =>
+        {
+            if (request.RequestUri!.AbsolutePath == "/api/login") return LoginResponse();
+            if (request.Method == HttpMethod.Get)
+                return Json(HttpStatusCode.BadRequest, "{\"Response\":{\"code\":\"201\",\"message\":\"User can not be found with id\"}}");
+            createBodies.Add((await CapturedRequest.From(request)).Body!);
+            return createBodies.Count == 1
+                ? Json(HttpStatusCode.BadRequest, "{\"Response\":{\"code\":\"212\",\"message\":\"E-mail already exists.\"}}")
+                : Json(HttpStatusCode.OK, "{\"Response\":{\"code\":\"0\",\"message\":\"Success\"}}");
+        });
+
+        var result = await CreateClient(handler).ApplyPersonAsync(Command("42"), CancellationToken.None);
+
+        Assert.Equal(AccessApplyOutcome.Applied, result.Outcome);
+        Assert.Equal(2, createBodies.Count);
+        using var retry = JsonDocument.Parse(createBodies[1]);
+        Assert.False(retry.RootElement.GetProperty("User").TryGetProperty("email", out _));
+    }
+
+    [Fact]
+    public async Task UndefinedNumericIdRetriesAsString()
+    {
+        var createBodies = new List<string>();
+        var handler = new StubHandler(async request =>
+        {
+            if (request.RequestUri!.AbsolutePath == "/api/login") return LoginResponse();
+            if (request.Method == HttpMethod.Get)
+                return Json(HttpStatusCode.BadRequest, "{\"Response\":{\"code\":\"201\",\"message\":\"User can not be found with id\"}}");
+            createBodies.Add((await CapturedRequest.From(request)).Body!);
+            return createBodies.Count == 1
+                ? Json(HttpStatusCode.InternalServerError, "{\"Response\":{\"code\":\"131074\",\"message\":\"not defined\"}}")
+                : Json(HttpStatusCode.OK, "{\"Response\":{\"code\":\"0\",\"message\":\"Success\"}}");
+        });
+        var options = new BioStarOptions
         {
             BaseUrl = "https://biostar.test",
             LoginId = "admin",
             Password = "secret",
             UserGroupId = "1052",
-            AccessGroupId = "3"
-        }),
+            AccessGroupId = "3",
+            UseNumericUserIdWhenPossible = true
+        };
+
+        var result = await CreateClient(handler, options).ApplyPersonAsync(Command("42"), CancellationToken.None);
+
+        Assert.Equal(AccessApplyOutcome.Applied, result.Outcome);
+        using var first = JsonDocument.Parse(createBodies[0]);
+        using var retry = JsonDocument.Parse(createBodies[1]);
+        Assert.Equal(JsonValueKind.Number, first.RootElement.GetProperty("User").GetProperty("user_id").ValueKind);
+        Assert.Equal(JsonValueKind.String, retry.RootElement.GetProperty("User").GetProperty("user_id").ValueKind);
+    }
+
+    private static BioStarClient CreateClient(HttpMessageHandler handler, BioStarOptions? options = null) => new(
+        new HttpClient(handler),
+        Options.Create(options ?? DefaultOptions()),
         NullLogger<BioStarClient>.Instance);
+
+    private static BioStarOptions DefaultOptions() => new()
+    {
+        BaseUrl = "https://biostar.test",
+        LoginId = "admin",
+        Password = "secret",
+        UserGroupId = "1052",
+        AccessGroupId = "3"
+    };
 
     private static AccessPersonCommand Command(string pin) => new()
     {

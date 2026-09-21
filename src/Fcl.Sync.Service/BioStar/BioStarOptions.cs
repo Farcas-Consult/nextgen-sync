@@ -31,7 +31,7 @@ public sealed class BioStarOptions
     /// Sends numeric member IDs as JSON numbers when possible. Set to false for BioStar
     /// installations that require user_id to always be a JSON string.
     /// </summary>
-    public bool UseNumericUserIdWhenPossible { get; init; } = true;
+    public bool UseNumericUserIdWhenPossible { get; init; }
 
     [Range(1, 255)]
     public int MaxNameLength { get; init; } = 48;

@@ -202,6 +202,21 @@ public sealed class BioStarClient : IBioStarClient
         }
     }
 
+    private static bool IsApplicationError(string body, string expectedCode)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            return TryGetPropertyIgnoreCase(document.RootElement, "Response", out var response) &&
+                   TryGetPropertyIgnoreCase(response, "code", out var code) &&
+                   string.Equals(code.ToString(), expectedCode, StringComparison.Ordinal);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
     private async Task CreateUserAsync(AccessPersonCommand command, CancellationToken cancellationToken)
     {
         var name = SanitizeAndLimit(command.Name, options.MaxNameLength);
@@ -210,27 +225,56 @@ public sealed class BioStarClient : IBioStarClient
             throw new InvalidOperationException($"BioStar user {command.Pin} cannot be created without a name.");
         }
 
-        var userId = ToBioStarUserId(command.Pin);
+        object userId = ToBioStarUserId(command.Pin);
         var email = SanitizeEmail(command.Email, command.Pin);
 
-        var payload = new Dictionary<string, object>
+        var includeEmail = true;
+        for (var attempt = 0; attempt < 3; attempt++)
         {
-            ["User"] = new
+            var payload = new Dictionary<string, object>
             {
-                user_id = userId,
-                name,
-                email,
-                start_datetime = FormatDate(options.StartDateTime),
-                expiry_datetime = FormatDate(options.ExpiryDateTime),
-                user_group_id = new { id = options.UserGroupId },
-                disabled = command.IsDisabled,
-                access_groups = new[] { new { id = options.AccessGroupId } }
-            }
-        };
+                ["User"] = new
+                {
+                    user_id = userId,
+                    name,
+                    email = includeEmail ? email : null,
+                    start_datetime = FormatDate(options.StartDateTime),
+                    expiry_datetime = FormatDate(options.ExpiryDateTime),
+                    user_group_id = new { id = options.UserGroupId },
+                    disabled = command.IsDisabled,
+                    access_groups = new[] { new { id = options.AccessGroupId } }
+                }
+            };
 
-        using var response = await SendAsync(HttpMethod.Post, "api/users", payload, cancellationToken);
-        await ReadSuccessfulBodyAsync(response, $"create user {command.Pin} ({Describe(command, name, email)})", cancellationToken);
-        logger.LogInformation("Created BioStar user {Pin}.", command.Pin);
+            using var response = await SendAsync(HttpMethod.Post, "api/users", payload, cancellationToken);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (response.IsSuccessStatusCode)
+            {
+                EnsureSuccessfulApplicationResponse(body, $"create user {command.Pin}");
+                logger.LogInformation("Created BioStar user {Pin}{WithoutEmail}.", command.Pin, includeEmail ? "" : " without email");
+                return;
+            }
+
+            if (IsApplicationError(body, "131074") && userId is not string)
+            {
+                logger.LogWarning("BioStar rejected numeric user_id for PIN {Pin}; retrying as a string.", command.Pin);
+                userId = command.Pin;
+                continue;
+            }
+
+            if (IsApplicationError(body, "212") && includeEmail)
+            {
+                logger.LogWarning("BioStar reports duplicate email for PIN {Pin}; retrying without email.", command.Pin);
+                includeEmail = false;
+                continue;
+            }
+
+            throw new HttpRequestException(
+                $"BioStar create user {command.Pin} ({Describe(command, name, includeEmail ? email : null)}) " +
+                $"returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
+        }
+
+        throw new HttpRequestException($"BioStar create user {command.Pin} exhausted compatibility retries.");
     }
 
     private async Task UpdateUserAsync(

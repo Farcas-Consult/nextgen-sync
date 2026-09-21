@@ -64,7 +64,7 @@ Provider selection is lazy. A non-ZKBio deployment can use `Noop` or a future pr
     "StartDateTime": "2001-01-01T00:00:00Z",
     "ExpiryDateTime": "2030-12-31T23:59:00Z",
     "AllowInvalidServerCertificate": true,
-    "UseNumericUserIdWhenPossible": true,
+    "UseNumericUserIdWhenPossible": false,
     "MaxNameLength": 48,
     "MaxEmailLength": 128,
     "CompanyIds": [3]
