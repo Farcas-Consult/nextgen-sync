@@ -134,9 +134,9 @@ public sealed class BioStarClient : IBioStarClient
             throw new InvalidOperationException($"BioStar user {command.Pin} cannot be created without a name.");
         }
 
-        var payload = new
+        var payload = new Dictionary<string, object>
         {
-            User = new
+            ["User"] = new
             {
                 user_id = command.Pin,
                 name,
@@ -160,9 +160,9 @@ public sealed class BioStarClient : IBioStarClient
         CancellationToken cancellationToken)
     {
         object payload = shape == BioStarResponseShape.UppercaseUserWrapper
-            ? new
+            ? new Dictionary<string, object>
             {
-                User = new
+                ["User"] = new
                 {
                     user_id = command.Pin,
                     disabled = command.IsDisabled,
@@ -235,7 +235,10 @@ public sealed class BioStarClient : IBioStarClient
                 return;
             }
 
-            var payload = new { User = new { login_id = options.LoginId, password = options.Password } };
+            var payload = new Dictionary<string, object>
+            {
+                ["User"] = new { login_id = options.LoginId, password = options.Password }
+            };
             using var content = new StringContent(JsonSerializer.Serialize(payload, JsonOptions), Encoding.UTF8, "application/json");
             using var response = await httpClient.PostAsync("api/login", content, cancellationToken);
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
