@@ -1,7 +1,6 @@
 namespace Fcl.Sync.Service.AccessControl;
 
 public sealed record AccessDecision(
-    string AccessLevelIds,
+    string Entitlement,
     bool IsDisabled,
-    string DepartmentCode,
     string Reason);

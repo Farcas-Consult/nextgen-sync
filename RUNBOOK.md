@@ -20,10 +20,17 @@ AccessProvider__Type=ZKBio
 ZKBio__BaseUrl=https://your-zkbio-server
 ZKBio__AccessToken=your-zkbio-token
 ZKBio__AllowInvalidServerCertificate=true
+BioStar__BaseUrl=https://your-biostar-server
+BioStar__LoginId=your-login
+BioStar__Password=your-password
+BioStar__UserGroupId=1052
+BioStar__AccessGroupId=3
+BioStar__AllowInvalidServerCertificate=true
+# BioStar__CompanyIds__0=3  # optional restriction
 Reconciliation__AccessProviderTimeoutMinutes=20
 Reconciliation__FullAuditIntervalHours=24
 Reconciliation__FullAuditOnStartup=true
-Reconciliation__ZKBioCacheMaxAgeHours=24
+Reconciliation__ProviderCacheMaxAgeHours=24
 HistoryRetention__Enabled=true
 HistoryRetention__CleanupIntervalHours=24
 HistoryRetention__AccessCommandRetentionDays=0
@@ -144,19 +151,28 @@ dotnet run --project src/Fcl.Sync.Service/Fcl.Sync.Service.csproj --no-launch-pr
 
 `AccessProvider__Type=ZKBio` should be set in `.env`.
 
+To run this installation with BioStar instead, select it as the sole provider:
+
+```text
+AccessProvider__Type=BioStar
+```
+
+Only one provider is active at a time; the service does not send the same member to both systems.
+
 The production sync order is:
 
 ```text
 1. Fetch current members from GymMaster Portal API
 2. Save/update members in SQLite
 3. Compute desired access/profile fingerprints
-4. Fast sync: skip members whose latest ZKBio cache fingerprint is still fresh
-5. Full audit: bypass the cache shortcut and force ZKBio confirmation
-6. Fetch matching people from ZKBio by PIN for members that need provider confirmation
-7. Skip people that already match
-8. Create/update missing or changed people through ZKBio API
-9. Update the local ZKBio cache after successful provider confirmation
-10. Record Applied, Skipped, or Failed command status in SQLite
+4. Map each member into the selected provider's access model
+5. Fast sync: skip members whose latest provider confirmation fingerprint is still fresh
+6. Full audit: bypass the cache shortcut and force provider confirmation
+7. Fetch matching people from the selected provider by PIN
+8. Skip people that already match
+9. Create/update missing or changed people through the provider API
+10. Update the provider-specific local cache after successful confirmation
+11. Record Applied, Skipped, or Failed status independently per provider
 ```
 
 The service does not delete ZKBio people.
@@ -177,7 +193,7 @@ The full audit cadence is controlled by:
 ```text
 Reconciliation__FullAuditIntervalHours=24
 Reconciliation__FullAuditOnStartup=true
-Reconciliation__ZKBioCacheMaxAgeHours=24
+Reconciliation__ProviderCacheMaxAgeHours=24
 ```
 
 The access-provider phase has a timeout controlled by:

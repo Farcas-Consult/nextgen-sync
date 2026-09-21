@@ -8,10 +8,12 @@ namespace Fcl.Sync.Service.AccessProviders;
 public sealed record AccessPersonCommand
 {
     public required string Pin { get; init; }
+    public long? CompanyId { get; init; }
     public required string Name { get; init; }
     public string? LastName { get; init; }
-    public required string AccessLevelIds { get; init; }
-    public required string DepartmentCode { get; init; }
+    public required string Entitlement { get; init; }
+    public string AccessLevelIds { get; init; } = "";
+    public string DepartmentCode { get; init; } = "";
     public required bool IsDisabled { get; init; }
     public string? Email { get; init; }
     public string? MobilePhone { get; init; }
@@ -26,10 +28,10 @@ public sealed record AccessPersonCommand
         var command = new AccessPersonCommand
         {
             Pin = member.MemberId.ToString(),
+            CompanyId = member.CompanyId,
             Name = string.IsNullOrWhiteSpace(fullName) ? member.MemberId.ToString() : fullName,
             LastName = member.Surname,
-            AccessLevelIds = decision.AccessLevelIds,
-            DepartmentCode = decision.DepartmentCode,
+            Entitlement = decision.Entitlement,
             IsDisabled = decision.IsDisabled,
             Email = member.Email,
             MobilePhone = member.MobilePhone,
@@ -41,8 +43,7 @@ public sealed record AccessPersonCommand
 
         var accessHash = HashParts(
             command.Pin,
-            NormalizeAccessLevels(command.AccessLevelIds),
-            Normalize(command.DepartmentCode),
+            Normalize(command.Entitlement),
             command.IsDisabled ? "1" : "0");
 
         var profileHash = HashParts(
@@ -57,6 +58,24 @@ public sealed record AccessPersonCommand
             AccessHash = accessHash,
             ProfileHash = profileHash,
             SyncHash = HashParts(accessHash, profileHash)
+        };
+    }
+
+    public AccessPersonCommand WithProviderAccess(string accessLevelIds, string departmentCode)
+    {
+        var accessHash = HashParts(
+            Pin,
+            Normalize(Entitlement),
+            NormalizeAccessLevels(accessLevelIds),
+            Normalize(departmentCode),
+            IsDisabled ? "1" : "0");
+
+        return this with
+        {
+            AccessLevelIds = accessLevelIds,
+            DepartmentCode = departmentCode,
+            AccessHash = accessHash,
+            SyncHash = HashParts(accessHash, ProfileHash)
         };
     }
 

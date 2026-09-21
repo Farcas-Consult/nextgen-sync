@@ -44,45 +44,51 @@ public sealed class GymMasterWebhookHandler(
             return;
         }
 
+        if (accessProvider is IAccessProviderMemberFilter filter && !filter.HandlesCompany(member.CompanyId))
+        {
+            logger.LogInformation(
+                "Ignoring GymMaster webhook {EventId} because company {CompanyId} is not handled by {ProviderName}.",
+                webhookEvent.EventId,
+                member.CompanyId,
+                accessProvider.Name);
+            return;
+        }
+
         var decision = accessPolicy.Decide(member);
         await store.UpsertMemberAsync(member, decision, cancellationToken);
 
         var command = AccessPersonCommand.From(member, decision);
         var commandId = await store.RecordAccessCommandAsync(accessProvider.Name, command.Pin, command, cancellationToken);
-
         try
         {
-            logger.LogInformation(
-                "Processing GymMaster webhook {EventId} ({EventType}) for member {MemberId}.",
-                webhookEvent.EventId,
-                webhookEvent.EventType,
-                webhookEvent.Payload.MemberId);
-
             var result = await accessProvider.ApplyAsync(command, cancellationToken);
-            await store.MarkAccessCommandAsync(
-                commandId,
-                ToCommandStatus(result),
-                result.Message,
-                cancellationToken);
+            await store.MarkAccessCommandAsync(commandId, ToCommandStatus(result), result.Message, cancellationToken);
 
-            if (accessProvider.Name == "ZKBio" && result.Outcome is AccessApplyOutcome.Applied or AccessApplyOutcome.Skipped)
+            if (result.Outcome is AccessApplyOutcome.Applied or AccessApplyOutcome.Skipped)
             {
-                await store.UpsertZKBioCacheAsync(command, DateTimeOffset.UtcNow, cancellationToken);
+                var desiredHash = accessProvider is IAccessProviderStateHasher hasher
+                    ? hasher.GetDesiredStateHash(command)
+                    : command.SyncHash;
+                await store.UpsertProviderCacheAsync(
+                    accessProvider.Name, accessProvider.Name, command.Pin, desiredHash, DateTimeOffset.UtcNow, cancellationToken);
             }
-
-            logger.LogInformation(
-                "Processed GymMaster webhook {EventId} for member {MemberId}; access command {CommandId} is {Status}.",
-                webhookEvent.EventId,
-                webhookEvent.Payload.MemberId,
-                commandId,
-                result.Outcome);
+            else
+            {
+                await store.RecordIntegrationErrorAsync(accessProvider.Name, result.Message ?? "Provider command failed.", null, cancellationToken);
+            }
         }
         catch (Exception ex)
         {
-            await store.MarkAccessCommandAsync(commandId, AccessCommandStatus.Failed, ex.Message, cancellationToken);
-            await store.RecordIntegrationErrorAsync(accessProvider.Name, ex.Message, ex.ToString(), cancellationToken);
+            await store.MarkAccessCommandAsync(commandId, AccessCommandStatus.Failed, ex.Message, CancellationToken.None);
+            await store.RecordIntegrationErrorAsync(accessProvider.Name, ex.Message, ex.ToString(), CancellationToken.None);
             throw;
         }
+
+        logger.LogInformation(
+            "Processed GymMaster webhook {EventId} for member {MemberId} through {ProviderName}.",
+            webhookEvent.EventId,
+            webhookEvent.Payload.MemberId,
+            accessProvider.Name);
     }
 
     private static AccessCommandStatus ToCommandStatus(AccessApplyResult result)

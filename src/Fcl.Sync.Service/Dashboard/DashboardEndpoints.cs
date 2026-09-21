@@ -276,10 +276,10 @@ public static class DashboardEndpoints
             return;
         }
 
-        html.AppendLine("<table><thead><tr><th>Status</th><th>Count</th></tr></thead><tbody>");
+        html.AppendLine("<table><thead><tr><th>Provider</th><th>Status</th><th>Count</th></tr></thead><tbody>");
         foreach (var count in counts)
         {
-            html.Append("<tr><td>").Append(Escape(count.Status)).Append("</td><td class=\"mono\">").Append(Escape(count.Count.ToString("N0"))).AppendLine("</td></tr>");
+            html.Append("<tr><td>").Append(Escape(count.ProviderName)).Append("</td><td>").Append(Escape(count.Status)).Append("</td><td class=\"mono\">").Append(Escape(count.Count.ToString("N0"))).AppendLine("</td></tr>");
         }
 
         html.AppendLine("</tbody></table>");
@@ -379,7 +379,7 @@ public static class DashboardEndpoints
 
     private static int CountStatus(IReadOnlyList<CommandStatusCount> counts, string status)
     {
-        return counts.FirstOrDefault(count => string.Equals(count.Status, status, StringComparison.OrdinalIgnoreCase))?.Count ?? 0;
+        return counts.Where(count => string.Equals(count.Status, status, StringComparison.OrdinalIgnoreCase)).Sum(count => count.Count);
     }
 
     private static string Escape(string value)

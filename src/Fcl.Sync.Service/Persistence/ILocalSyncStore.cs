@@ -26,12 +26,16 @@ public interface ILocalSyncStore
     Task MarkStalePendingAccessCommandsAsync(string reason, CancellationToken cancellationToken);
 
     Task<IReadOnlySet<string>> GetFreshConfirmedPinsAsync(
+        string providerName,
         IReadOnlyDictionary<string, string> desiredHashesByPin,
         DateTimeOffset freshAfter,
         CancellationToken cancellationToken);
 
-    Task UpsertZKBioCacheAsync(
-        AccessPersonCommand command,
+    Task UpsertProviderCacheAsync(
+        string providerName,
+        string providerType,
+        string pin,
+        string desiredHash,
         DateTimeOffset observedAt,
         CancellationToken cancellationToken);
 

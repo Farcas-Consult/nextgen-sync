@@ -16,10 +16,9 @@ public sealed class InMemoryLocalSyncStore(ILogger<InMemoryLocalSyncStore> logge
     public Task UpsertMemberAsync(GymMasterMember member, AccessDecision accessDecision, CancellationToken cancellationToken)
     {
         logger.LogInformation(
-            "Stored member {MemberId} with access {AccessLevelIds}, department {DepartmentCode}, disabled {IsDisabled}.",
+            "Stored member {MemberId} with entitlement {Entitlement}, disabled {IsDisabled}.",
             member.MemberId,
-            accessDecision.AccessLevelIds,
-            accessDecision.DepartmentCode,
+            accessDecision.Entitlement,
             accessDecision.IsDisabled);
 
         return Task.CompletedTask;
@@ -44,6 +43,7 @@ public sealed class InMemoryLocalSyncStore(ILogger<InMemoryLocalSyncStore> logge
     }
 
     public Task<IReadOnlySet<string>> GetFreshConfirmedPinsAsync(
+        string providerName,
         IReadOnlyDictionary<string, string> desiredHashesByPin,
         DateTimeOffset freshAfter,
         CancellationToken cancellationToken)
@@ -51,9 +51,15 @@ public sealed class InMemoryLocalSyncStore(ILogger<InMemoryLocalSyncStore> logge
         return Task.FromResult<IReadOnlySet<string>>(new HashSet<string>());
     }
 
-    public Task UpsertZKBioCacheAsync(AccessPersonCommand command, DateTimeOffset observedAt, CancellationToken cancellationToken)
+    public Task UpsertProviderCacheAsync(
+        string providerName,
+        string providerType,
+        string pin,
+        string desiredHash,
+        DateTimeOffset observedAt,
+        CancellationToken cancellationToken)
     {
-        logger.LogInformation("Updated ZKBio cache for PIN {Pin}.", command.Pin);
+        logger.LogInformation("Updated {ProviderName} cache for PIN {Pin}.", providerName, pin);
         return Task.CompletedTask;
     }
 

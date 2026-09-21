@@ -29,12 +29,12 @@ ZKBio__AccessToken=token
 
 ## Access Providers
 
-The app is intentionally not tied to ZKBio. Configure the target system with:
+The app uses one access provider for the complete installation. Select either ZKBio or BioStar:
 
 ```json
 {
   "AccessProvider": {
-    "Type": "ZKBio"
+    "Type": "BioStar"
   }
 }
 ```
@@ -42,11 +42,35 @@ The app is intentionally not tied to ZKBio. Configure the target system with:
 Supported values right now:
 
 - `ZKBio` - posts create/update payloads to the ZKBio HTTP API.
+- `BioStar` - authenticates with BioStar 2, then creates, enables, or disables users.
 - `Noop` - accepts commands without sending them anywhere; useful for local tests and future non-ZKBio integrations.
 
-New integrations should implement `IAccessProvider` and consume `AccessPersonCommand`.
+ZKBio and BioStar are alternatives, not simultaneous targets. All reconciliation and webhook commands are sent only to the selected provider.
+
+New integrations should implement `IAccessProvider` and consume the provider-neutral `AccessPersonCommand`.
 
 Provider selection is lazy. A non-ZKBio deployment can use `Noop` or a future provider without configuring ZKBio settings.
+
+## BioStar
+
+```json
+{
+  "BioStar": {
+    "BaseUrl": "https://biostar-server",
+    "LoginId": "admin",
+    "Password": "secret",
+    "UserGroupId": "1052",
+    "AccessGroupId": "3",
+    "StartDateTime": "2001-01-01T00:00:00Z",
+    "ExpiryDateTime": "2099-12-31T23:59:00Z",
+    "AllowInvalidServerCertificate": true,
+    "CompanyIds": []
+  }
+}
+```
+
+The client uses `/api/login`, retains the `bs-session-id` without logging it, retries once after an expired session, and supports the BioStar response shapes used by the supplied JavaScript.
+By default, BioStar processes all GymMaster members. Configure `BioStar:CompanyIds` only when an installation must be restricted to selected companies.
 
 ## GymMaster
 
@@ -97,6 +121,7 @@ Tables created automatically:
 - `webhook_events`
 - `members`
 - `access_commands`
+- `provider_people`
 - `sync_runs`
 - `integration_errors`
 

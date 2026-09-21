@@ -27,7 +27,7 @@ public sealed record SyncRunSummary(
         : (CompletedAt ?? DateTimeOffset.UtcNow) - StartedAt;
 }
 
-public sealed record CommandStatusCount(string Status, int Count);
+public sealed record CommandStatusCount(string ProviderName, string Status, int Count);
 
 public sealed record IntegrationErrorSummary(
     string Source,

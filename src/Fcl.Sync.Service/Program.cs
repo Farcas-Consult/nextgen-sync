@@ -8,6 +8,7 @@ using Fcl.Sync.Service.Persistence;
 using Fcl.Sync.Service.Reconciliation;
 using Fcl.Sync.Service.Webhooks;
 using Fcl.Sync.Service.ZKBio;
+using Fcl.Sync.Service.BioStar;
 
 LocalEnv.Load();
 
@@ -30,6 +31,9 @@ builder.Services.AddOptions<GymMasterOptions>()
 
 builder.Services.AddOptions<ZKBioOptions>()
     .Bind(builder.Configuration.GetSection(ZKBioOptions.SectionName));
+
+builder.Services.AddOptions<BioStarOptions>()
+    .Bind(builder.Configuration.GetSection(BioStarOptions.SectionName));
 
 builder.Services.AddOptions<ReconciliationOptions>()
     .Bind(builder.Configuration.GetSection(ReconciliationOptions.SectionName))
@@ -66,8 +70,11 @@ builder.Services.AddHttpClient<IZKBioClient, ZKBioClient>()
 
         return handler;
     });
+builder.Services.AddHttpClient<IBioStarClient, BioStarClient>()
+    .ConfigurePrimaryHttpMessageHandler(BioStarHttpMessageHandlerFactory.Create);
 builder.Services.AddSingleton<NoopAccessProvider>();
 builder.Services.AddSingleton<ZKBioAccessProvider>();
+builder.Services.AddSingleton<BioStarAccessProvider>();
 builder.Services.AddSingleton<IAccessProvider, ConfiguredAccessProvider>();
 builder.Services.AddSingleton<SqliteLocalSyncStore>();
 builder.Services.AddSingleton<ILocalSyncStore>(sp => sp.GetRequiredService<SqliteLocalSyncStore>());

@@ -4,7 +4,7 @@ namespace Fcl.Sync.Service.AccessProviders;
 
 public sealed class ConfiguredAccessProvider(
     IOptions<AccessProviderOptions> options,
-    IServiceProvider serviceProvider) : IBulkAccessProvider
+    IServiceProvider serviceProvider) : IBulkAccessProvider, IAccessProviderStateHasher, IAccessProviderMemberFilter
 {
     public string Name => Current.Name;
 
@@ -12,13 +12,13 @@ public sealed class ConfiguredAccessProvider(
     {
         "noop" or "none" => serviceProvider.GetRequiredService<NoopAccessProvider>(),
         "zkbio" => serviceProvider.GetRequiredService<ZKBioAccessProvider>(),
-        var unknown => throw new InvalidOperationException($"Unknown access provider '{unknown}'. Supported values: ZKBio, Noop.")
+        "biostar" => serviceProvider.GetRequiredService<BioStarAccessProvider>(),
+        var unknown => throw new InvalidOperationException(
+            $"Unknown access provider '{unknown}'. Supported values: ZKBio, BioStar, Noop.")
     };
 
-    public Task<AccessApplyResult> ApplyAsync(AccessPersonCommand command, CancellationToken cancellationToken)
-    {
-        return Current.ApplyAsync(command, cancellationToken);
-    }
+    public Task<AccessApplyResult> ApplyAsync(AccessPersonCommand command, CancellationToken cancellationToken) =>
+        Current.ApplyAsync(command, cancellationToken);
 
     public async Task<IReadOnlyDictionary<string, AccessApplyResult>> ApplyBatchAsync(
         IReadOnlyList<AccessPersonCommand> commands,
@@ -30,12 +30,16 @@ public sealed class ConfiguredAccessProvider(
         }
 
         var results = new Dictionary<string, AccessApplyResult>(StringComparer.Ordinal);
-
         foreach (var command in commands)
         {
             results[command.Pin] = await Current.ApplyAsync(command, cancellationToken);
         }
-
         return results;
     }
+
+    public string GetDesiredStateHash(AccessPersonCommand command) =>
+        Current is IAccessProviderStateHasher hasher ? hasher.GetDesiredStateHash(command) : command.SyncHash;
+
+    public bool HandlesCompany(long? companyId) =>
+        Current is not IAccessProviderMemberFilter filter || filter.HandlesCompany(companyId);
 }

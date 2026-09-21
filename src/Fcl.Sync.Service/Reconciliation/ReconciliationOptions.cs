@@ -18,5 +18,5 @@ public sealed class ReconciliationOptions
     public bool FullAuditOnStartup { get; init; } = true;
 
     [Range(1, 168)]
-    public int ZKBioCacheMaxAgeHours { get; init; } = 24;
+    public int ProviderCacheMaxAgeHours { get; init; } = 24;
 }

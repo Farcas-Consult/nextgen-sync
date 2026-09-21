@@ -102,6 +102,7 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
                     email,
                     mobile_phone,
                     join_date,
+                    entitlement,
                     access_level_ids,
                     is_disabled,
                     department_code,
@@ -120,6 +121,7 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
                     $email,
                     $mobile_phone,
                     $join_date,
+                    $entitlement,
                     $access_level_ids,
                     $is_disabled,
                     $department_code,
@@ -137,6 +139,7 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
                     email = excluded.email,
                     mobile_phone = excluded.mobile_phone,
                     join_date = excluded.join_date,
+                    entitlement = excluded.entitlement,
                     access_level_ids = excluded.access_level_ids,
                     is_disabled = excluded.is_disabled,
                     department_code = excluded.department_code,
@@ -155,9 +158,10 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
             command.Parameters.AddWithValue("$email", (object?)member.Email ?? DBNull.Value);
             command.Parameters.AddWithValue("$mobile_phone", (object?)member.MobilePhone ?? DBNull.Value);
             command.Parameters.AddWithValue("$join_date", (object?)member.JoinDate?.ToString("O") ?? DBNull.Value);
-            command.Parameters.AddWithValue("$access_level_ids", accessDecision.AccessLevelIds);
+            command.Parameters.AddWithValue("$entitlement", accessDecision.Entitlement);
+            command.Parameters.AddWithValue("$access_level_ids", "");
             command.Parameters.AddWithValue("$is_disabled", accessDecision.IsDisabled ? 1 : 0);
-            command.Parameters.AddWithValue("$department_code", accessDecision.DepartmentCode);
+            command.Parameters.AddWithValue("$department_code", "");
             command.Parameters.AddWithValue("$access_reason", accessDecision.Reason);
             command.Parameters.AddWithValue("$raw_payload", JsonSerializer.Serialize(member, JsonOptions));
             command.Parameters.AddWithValue("$updated_at", DateTimeOffset.UtcNow.ToString("O"));
@@ -287,6 +291,7 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
     }
 
     public async Task<IReadOnlySet<string>> GetFreshConfirmedPinsAsync(
+        string providerName,
         IReadOnlyDictionary<string, string> desiredHashesByPin,
         DateTimeOffset freshAfter,
         CancellationToken cancellationToken)
@@ -306,13 +311,15 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
             var parameters = chunk.Select((_, index) => $"$pin{index}").ToArray();
             await using var command = connection.CreateCommand();
             command.CommandText = $"""
-                SELECT pin, sync_hash
-                FROM zkbio_people
+                SELECT pin, desired_hash
+                FROM provider_people
                 WHERE last_confirmed_at >= $fresh_after
+                  AND provider_name = $provider_name
                   AND pin IN ({string.Join(", ", parameters)});
                 """;
 
             command.Parameters.AddWithValue("$fresh_after", freshAfter.ToString("O"));
+            command.Parameters.AddWithValue("$provider_name", providerName);
 
             var index = 0;
             foreach (var (pin, _) in chunk)
@@ -338,8 +345,11 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
         return confirmedPins;
     }
 
-    public async Task UpsertZKBioCacheAsync(
-        AccessPersonCommand command,
+    public async Task UpsertProviderCacheAsync(
+        string providerName,
+        string providerType,
+        string pin,
+        string desiredHash,
         DateTimeOffset observedAt,
         CancellationToken cancellationToken)
     {
@@ -351,66 +361,33 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
             await using var connection = await OpenConnectionAsync(cancellationToken);
             await using var dbCommand = connection.CreateCommand();
             dbCommand.CommandText = """
-                INSERT INTO zkbio_people (
+                INSERT INTO provider_people (
+                    provider_name,
+                    provider_type,
                     pin,
-                    name,
-                    last_name,
-                    access_level_ids,
-                    department_code,
-                    is_disabled,
-                    email,
-                    mobile_phone,
-                    join_date,
-                    access_hash,
-                    profile_hash,
-                    sync_hash,
+                    desired_hash,
                     last_confirmed_at,
                     updated_at
                 )
                 VALUES (
+                    $provider_name,
+                    $provider_type,
                     $pin,
-                    $name,
-                    $last_name,
-                    $access_level_ids,
-                    $department_code,
-                    $is_disabled,
-                    $email,
-                    $mobile_phone,
-                    $join_date,
-                    $access_hash,
-                    $profile_hash,
-                    $sync_hash,
+                    $desired_hash,
                     $last_confirmed_at,
                     $updated_at
                 )
-                ON CONFLICT(pin) DO UPDATE SET
-                    name = excluded.name,
-                    last_name = excluded.last_name,
-                    access_level_ids = excluded.access_level_ids,
-                    department_code = excluded.department_code,
-                    is_disabled = excluded.is_disabled,
-                    email = excluded.email,
-                    mobile_phone = excluded.mobile_phone,
-                    join_date = excluded.join_date,
-                    access_hash = excluded.access_hash,
-                    profile_hash = excluded.profile_hash,
-                    sync_hash = excluded.sync_hash,
+                ON CONFLICT(provider_name, pin) DO UPDATE SET
+                    provider_type = excluded.provider_type,
+                    desired_hash = excluded.desired_hash,
                     last_confirmed_at = excluded.last_confirmed_at,
                     updated_at = excluded.updated_at;
                 """;
 
-            dbCommand.Parameters.AddWithValue("$pin", command.Pin);
-            dbCommand.Parameters.AddWithValue("$name", command.Name);
-            dbCommand.Parameters.AddWithValue("$last_name", (object?)command.LastName ?? DBNull.Value);
-            dbCommand.Parameters.AddWithValue("$access_level_ids", command.AccessLevelIds);
-            dbCommand.Parameters.AddWithValue("$department_code", command.DepartmentCode);
-            dbCommand.Parameters.AddWithValue("$is_disabled", command.IsDisabled ? 1 : 0);
-            dbCommand.Parameters.AddWithValue("$email", (object?)command.Email ?? DBNull.Value);
-            dbCommand.Parameters.AddWithValue("$mobile_phone", (object?)command.MobilePhone ?? DBNull.Value);
-            dbCommand.Parameters.AddWithValue("$join_date", (object?)command.JoinDate?.ToString("O") ?? DBNull.Value);
-            dbCommand.Parameters.AddWithValue("$access_hash", command.AccessHash);
-            dbCommand.Parameters.AddWithValue("$profile_hash", command.ProfileHash);
-            dbCommand.Parameters.AddWithValue("$sync_hash", command.SyncHash);
+            dbCommand.Parameters.AddWithValue("$provider_name", providerName);
+            dbCommand.Parameters.AddWithValue("$provider_type", providerType);
+            dbCommand.Parameters.AddWithValue("$pin", pin);
+            dbCommand.Parameters.AddWithValue("$desired_hash", desiredHash);
             dbCommand.Parameters.AddWithValue("$last_confirmed_at", observedAt.ToString("O"));
             dbCommand.Parameters.AddWithValue("$updated_at", DateTimeOffset.UtcNow.ToString("O"));
 
@@ -542,7 +519,7 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
                   AND ($keep_latest = 0 OR id NOT IN (
                       SELECT MAX(id)
                       FROM access_commands
-                      GROUP BY pin
+                      GROUP BY provider_name, pin
                   ))
                   AND NOT (status = 'Failed' AND created_at >= $failed_command_cutoff);
                 """, cancellationToken, command =>
@@ -663,17 +640,17 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
         await using var command = connection.CreateCommand();
         command.CommandText = whereClause is null
             ? """
-                SELECT status, COUNT(*)
+                SELECT provider_name, status, COUNT(*)
                 FROM access_commands
-                GROUP BY status
-                ORDER BY status;
+                GROUP BY provider_name, status
+                ORDER BY provider_name, status;
                 """
             : $"""
-                SELECT status, COUNT(*)
+                SELECT provider_name, status, COUNT(*)
                 FROM access_commands
                 WHERE {whereClause}
-                GROUP BY status
-                ORDER BY status;
+                GROUP BY provider_name, status
+                ORDER BY provider_name, status;
                 """;
 
         if (startedAt is not null)
@@ -685,7 +662,7 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            counts.Add(new CommandStatusCount(reader.GetString(0), reader.GetInt32(1)));
+            counts.Add(new CommandStatusCount(reader.GetString(0), reader.GetString(1), reader.GetInt32(2)));
         }
 
         return counts;
@@ -802,6 +779,7 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
                     email TEXT NULL,
                     mobile_phone TEXT NULL,
                     join_date TEXT NULL,
+                    entitlement TEXT NOT NULL DEFAULT '',
                     access_level_ids TEXT NOT NULL,
                     is_disabled INTEGER NOT NULL,
                     department_code TEXT NOT NULL,
@@ -837,6 +815,11 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
                 """;
 
             await command.ExecuteNonQueryAsync(cancellationToken);
+
+            await ExecuteSchemaCommandAsync(
+                connection,
+                "ALTER TABLE members ADD COLUMN entitlement TEXT NOT NULL DEFAULT '';",
+                cancellationToken);
 
             command.CommandText = """
                 ALTER TABLE sync_runs ADD COLUMN mode TEXT NOT NULL DEFAULT 'Fast';
@@ -877,6 +860,19 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
                 CREATE INDEX IF NOT EXISTS ix_zkbio_people_sync_hash_confirmed
                     ON zkbio_people(sync_hash, last_confirmed_at);
 
+                CREATE TABLE IF NOT EXISTS provider_people (
+                    provider_name TEXT NOT NULL,
+                    provider_type TEXT NOT NULL,
+                    pin TEXT NOT NULL,
+                    desired_hash TEXT NOT NULL,
+                    last_confirmed_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(provider_name, pin)
+                );
+
+                CREATE INDEX IF NOT EXISTS ix_provider_people_hash_confirmed
+                    ON provider_people(provider_name, desired_hash, last_confirmed_at);
+
                 CREATE TABLE IF NOT EXISTS integration_errors (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     source TEXT NOT NULL,
@@ -886,6 +882,14 @@ public sealed class SqliteLocalSyncStore : ILocalSyncStore, ISyncDashboardStore
                 );
                 """;
 
+            await command.ExecuteNonQueryAsync(cancellationToken);
+
+            command.CommandText = """
+                INSERT OR IGNORE INTO provider_people (
+                    provider_name, provider_type, pin, desired_hash, last_confirmed_at, updated_at)
+                SELECT 'ZKBio', 'ZKBio', pin, sync_hash, last_confirmed_at, updated_at
+                FROM zkbio_people;
+                """;
             await command.ExecuteNonQueryAsync(cancellationToken);
             initialized = true;
         }
