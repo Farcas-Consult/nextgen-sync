@@ -53,7 +53,7 @@ builder.Services.AddOptions<BioStarOptions>()
         "BioStar:ExpiryDateTime must be later than StartDateTime and at least six months in the future.")
     .Validate(options =>
         !string.Equals(builder.Configuration[$"{AccessProviderOptions.SectionName}:Type"], "BioStar", StringComparison.OrdinalIgnoreCase) ||
-        options.CompanyIds.Count == 1 && options.CompanyIds.Contains(3),
+        options.CompanyIds.Count > 0 && options.CompanyIds.All(companyId => companyId == 3),
         "This BioStar installation requires BioStar:CompanyIds to contain exactly company 3.")
     .ValidateOnStart();
 
