@@ -105,7 +105,18 @@ public sealed class BioStarClient : IBioStarClient
             return null;
         }
 
-        var body = await ReadSuccessfulBodyAsync(response, $"get user {pin}", cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (response.StatusCode == HttpStatusCode.BadRequest && IsUserNotFound(body))
+        {
+            return null;
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"BioStar get user {pin} returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
+        }
+
         using var document = JsonDocument.Parse(body);
         var root = document.RootElement;
         var shape = BioStarResponseShape.Direct;
@@ -124,6 +135,29 @@ public sealed class BioStarClient : IBioStarClient
 
         var disabled = TryGetPropertyIgnoreCase(user, "disabled", out var value) && IsTrue(value);
         return new BioStarUserState(disabled, shape);
+    }
+
+    private static bool IsUserNotFound(string body)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            if (!document.RootElement.TryGetProperty("Response", out var response))
+            {
+                return false;
+            }
+
+            var hasNotFoundCode = response.TryGetProperty("code", out var code) &&
+                (code.ValueKind == JsonValueKind.String && code.GetString() == "201" ||
+                 code.ValueKind == JsonValueKind.Number && code.TryGetInt32(out var number) && number == 201);
+            var hasNotFoundMessage = response.TryGetProperty("message", out var message) &&
+                message.GetString()?.Contains("can not be found", StringComparison.OrdinalIgnoreCase) == true;
+            return hasNotFoundCode || hasNotFoundMessage;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private async Task CreateUserAsync(AccessPersonCommand command, CancellationToken cancellationToken)

@@ -240,12 +240,19 @@ HistoryRetention__VacuumAfterCleanup=true
 
 ## Install As Windows Service
 
-Install the .NET 10 Hosting Bundle or runtime on the Windows PC first.
+Install the .NET 10 SDK on the Windows PC that performs the publish. A self-contained published application does not require .NET to be installed at runtime.
 
-Publish the service:
+From the repository root, publish into a staging directory. In Command Prompt, enter this as one line:
 
-```powershell
-dotnet publish .\src\Fcl.Sync.Service\Fcl.Sync.Service.csproj -c Release -o C:\FclSync
+```cmd
+dotnet publish .\src\Fcl.Sync.Service\Fcl.Sync.Service.csproj -c Release -r win-x64 --self-contained true -o .\publish\win-x64
+```
+
+Copy the published application into its permanent directory:
+
+```cmd
+mkdir C:\FclSync
+robocopy .\publish\win-x64 C:\FclSync /E
 ```
 
 Create `C:\FclSync\.env` with the production settings. The SQLite database should also live under this folder by default:
@@ -259,7 +266,7 @@ Install the Windows service from an Administrator PowerShell:
 ```powershell
 New-Service `
   -Name "FclSyncService" `
-  -BinaryPathName "C:\FclSync\Fcl.Sync.Service.exe --urls http://127.0.0.1:5050" `
+  -BinaryPathName "C:\FclSync\Fcl.Sync.Service.exe" `
   -DisplayName "FCL GymMaster Sync" `
   -Description "Syncs GymMaster members to the local access provider." `
   -StartupType Automatic
@@ -303,6 +310,120 @@ Uninstall:
 Stop-Service FclSyncService
 sc.exe delete FclSyncService
 ```
+
+## Update The Windows PC After Code Changes
+
+The source code and published application are separate. After every code change, publish new Windows binaries and copy them to `C:\FclSync`. Copying source files alone does not update the running service.
+
+### 1. Update the source
+
+On the Windows PC, open Command Prompt in the repository. If the repository uses Git, fetch the latest committed code:
+
+```cmd
+cd /d C:\Users\USER\Desktop\FCL\nextgen-sync
+git pull
+```
+
+If code is transferred another way, copy the updated repository into that location before continuing.
+
+### 2. Build and publish to staging
+
+Confirm that a .NET 10 SDK is installed:
+
+```cmd
+dotnet --list-sdks
+```
+
+Build and publish:
+
+```cmd
+dotnet build .\Fcl.Sync.slnx -c Release
+dotnet publish .\src\Fcl.Sync.Service\Fcl.Sync.Service.csproj -c Release -r win-x64 --self-contained true -o .\publish\win-x64
+```
+
+Never publish directly into `C:\FclSync` while the application is running.
+
+### 3. Stop the current application
+
+If it is installed as a Windows service, use Administrator Command Prompt or PowerShell:
+
+```cmd
+sc.exe stop FclSyncService
+```
+
+Wait until it reports `STOPPED`:
+
+```cmd
+sc.exe query FclSyncService
+```
+
+If it is running interactively in a console, press `Ctrl+C` instead.
+
+### 4. Back up the current binaries
+
+This backup excludes `.env` and the SQLite `data` directory because those are persistent production data:
+
+```cmd
+mkdir C:\FclSync-backup
+robocopy C:\FclSync C:\FclSync-backup /E /XD data /XF .env
+```
+
+### 5. Copy the new version
+
+Run this from the repository root:
+
+```cmd
+robocopy .\publish\win-x64 C:\FclSync /E
+```
+
+Do not use `/MIR`. The `/E` copy updates application files without deleting:
+
+- `C:\FclSync\.env`
+- `C:\FclSync\data\fcl-sync.db`
+
+Confirm the required files are present:
+
+```cmd
+dir /a C:\FclSync
+```
+
+The listing must include `Fcl.Sync.Service.exe` and `.env`.
+
+### 6. Start and verify
+
+For a Windows service:
+
+```cmd
+sc.exe start FclSyncService
+sc.exe query FclSyncService
+```
+
+For an interactive test:
+
+```cmd
+cd /d C:\FclSync
+Fcl.Sync.Service.exe
+```
+
+Open the dashboard using the port configured by `ASPNETCORE_URLS`, for example:
+
+```text
+http://127.0.0.1:4040/dashboard
+```
+
+Verify that the service is running, the latest reconciliation completes, pending commands return to zero, and no new integration errors appear.
+
+### 7. Roll back if necessary
+
+Stop the service, restore the previous binaries, and start it again:
+
+```cmd
+sc.exe stop FclSyncService
+robocopy C:\FclSync-backup C:\FclSync /E
+sc.exe start FclSyncService
+```
+
+Rollback preserves the existing `.env` and SQLite database.
 
 ## Webhook Endpoint
 
