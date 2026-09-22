@@ -50,6 +50,7 @@ ZKBio and BioStar are alternatives, not simultaneous targets. All reconciliation
 New integrations should implement `IAccessProvider` and consume the provider-neutral `AccessPersonCommand`.
 
 Provider selection is lazy. A non-ZKBio deployment can use `Noop` or a future provider without configuring ZKBio settings.
+Only the selected provider's required settings are validated at startup.
 
 ## BioStar
 
@@ -100,12 +101,14 @@ ZKBio config:
   "ZKBio": {
     "BaseUrl": "https://zkbio-server",
     "AccessToken": "token",
+    "CompanyIds": [4],
     "AllowInvalidServerCertificate": true
   }
 }
 ```
 
 The current client posts provider-neutral commands to `/api/person/add`, matching the existing `zkbio.ts` implementation.
+`CompanyIds` is optional for ZKBio. When it is absent or empty, all GymMaster companies are processed. When configured, only members belonging to the listed companies are processed. Do not copy company `3` from the BioStar example unless it is actually this site's GymMaster company ID.
 
 ## SQLite
 

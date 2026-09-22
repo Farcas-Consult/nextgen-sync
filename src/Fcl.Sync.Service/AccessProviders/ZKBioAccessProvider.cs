@@ -5,7 +5,7 @@ namespace Fcl.Sync.Service.AccessProviders;
 
 public sealed class ZKBioAccessProvider(
     IZKBioClient zkbioClient,
-    IOptions<ZKBioOptions> options) : IBulkAccessProvider, IAccessProviderStateHasher
+    IOptions<ZKBioOptions> options) : IBulkAccessProvider, IAccessProviderStateHasher, IAccessProviderMemberFilter
 {
     public string Name => "ZKBio";
 
@@ -22,6 +22,10 @@ public sealed class ZKBioAccessProvider(
     }
 
     public string GetDesiredStateHash(AccessPersonCommand command) => Map(command).SyncHash;
+
+    public bool HandlesCompany(long? companyId) =>
+        options.Value.CompanyIds is null or { Count: 0 } ||
+        companyId is not null && options.Value.CompanyIds.Contains(companyId.Value);
 
     private AccessPersonCommand Map(AccessPersonCommand command)
     {

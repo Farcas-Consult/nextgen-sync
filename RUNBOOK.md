@@ -22,6 +22,8 @@ GymMaster__Webhooks__SecretToken=your-webhook-token
 AccessProvider__Type=ZKBio
 ZKBio__BaseUrl=https://your-zkbio-server
 ZKBio__AccessToken=your-zkbio-token
+# Optional site scope. Omit to process all GymMaster companies.
+# ZKBio__CompanyIds__0=4
 ZKBio__AllowInvalidServerCertificate=true
 BioStar__BaseUrl=https://your-biostar-server
 BioStar__LoginId=your-login
@@ -159,6 +161,14 @@ dotnet run --project src/Fcl.Sync.Service/Fcl.Sync.Service.csproj --no-launch-pr
 ```
 
 `AccessProvider__Type=ZKBio` should be set in `.env`.
+
+ZKBio can optionally be limited to a GymMaster company:
+
+```text
+ZKBio__CompanyIds__0=4
+```
+
+Replace `4` with the company ID belonging to this installation. Add `ZKBio__CompanyIds__1`, `__2`, and so on when one physical ZKBio installation intentionally serves multiple GymMaster companies. If every `ZKBio__CompanyIds__*` setting is omitted, ZKBio processes members from all companies. BioStar settings are not required when ZKBio is selected.
 
 To run this installation with BioStar instead, select it as the sole provider:
 

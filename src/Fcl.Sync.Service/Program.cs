@@ -30,11 +30,19 @@ builder.Services.AddOptions<GymMasterOptions>()
     .ValidateOnStart();
 
 builder.Services.AddOptions<ZKBioOptions>()
-    .Bind(builder.Configuration.GetSection(ZKBioOptions.SectionName));
+    .Bind(builder.Configuration.GetSection(ZKBioOptions.SectionName))
+    .Validate(options =>
+        !string.Equals(builder.Configuration[$"{AccessProviderOptions.SectionName}:Type"], "ZKBio", StringComparison.OrdinalIgnoreCase) ||
+        !string.IsNullOrWhiteSpace(options.BaseUrl) && !string.IsNullOrWhiteSpace(options.AccessToken),
+        "Selected ZKBio provider requires ZKBio:BaseUrl and ZKBio:AccessToken.")
+    .Validate(options =>
+        !string.Equals(builder.Configuration[$"{AccessProviderOptions.SectionName}:Type"], "ZKBio", StringComparison.OrdinalIgnoreCase) ||
+        options.BatchSize > 0,
+        "Selected ZKBio provider requires ZKBio:BatchSize greater than zero.")
+    .ValidateOnStart();
 
 builder.Services.AddOptions<BioStarOptions>()
     .Bind(builder.Configuration.GetSection(BioStarOptions.SectionName))
-    .ValidateDataAnnotations()
     .Validate(options =>
         !string.Equals(builder.Configuration[$"{AccessProviderOptions.SectionName}:Type"], "BioStar", StringComparison.OrdinalIgnoreCase) ||
         !string.IsNullOrWhiteSpace(options.BaseUrl),
@@ -53,7 +61,11 @@ builder.Services.AddOptions<BioStarOptions>()
         "BioStar:ExpiryDateTime must be later than StartDateTime and at least six months in the future.")
     .Validate(options =>
         !string.Equals(builder.Configuration[$"{AccessProviderOptions.SectionName}:Type"], "BioStar", StringComparison.OrdinalIgnoreCase) ||
-        options.CompanyIds.Count > 0 && options.CompanyIds.All(companyId => companyId == 3),
+        options.MaxNameLength is >= 1 and <= 255 && options.MaxEmailLength is >= 3 and <= 320,
+        "Selected BioStar provider requires valid BioStar:MaxNameLength and BioStar:MaxEmailLength values.")
+    .Validate(options =>
+        !string.Equals(builder.Configuration[$"{AccessProviderOptions.SectionName}:Type"], "BioStar", StringComparison.OrdinalIgnoreCase) ||
+        options.CompanyIds.Count == 1 && options.CompanyIds[0] == 3,
         "This BioStar installation requires BioStar:CompanyIds to contain exactly company 3.")
     .ValidateOnStart();
 
