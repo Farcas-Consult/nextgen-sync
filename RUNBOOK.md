@@ -200,6 +200,8 @@ ZKBio person-level failures do not stop the rest of the batch. The failed PIN is
 
 If ZKBio rejects a person because the mailbox/email already exists, the service retries that same person without email so access permissions can still sync.
 
+ZKBio does not accept punctuation or symbols in person names. The service removes those characters from the ZKBio-bound `name` and `lastName`, collapses whitespace, and uses the member PIN if no usable name remains. GymMaster and the local member record retain the original name.
+
 There are two reconciliation modes:
 
 ```text

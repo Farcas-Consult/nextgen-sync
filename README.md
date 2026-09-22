@@ -109,6 +109,7 @@ ZKBio config:
 
 The current client posts provider-neutral commands to `/api/person/add`, matching the existing `zkbio.ts` implementation.
 `CompanyIds` is optional for ZKBio. When it is absent or empty, all GymMaster companies are processed. When configured, only members belonging to the listed companies are processed. Do not copy company `3` from the BioStar example unless it is actually this site's GymMaster company ID.
+Names are sanitized only in the ZKBio payload because ZKBio rejects punctuation and symbols in its name fields. The original GymMaster member name remains unchanged in local storage.
 
 ## SQLite
 

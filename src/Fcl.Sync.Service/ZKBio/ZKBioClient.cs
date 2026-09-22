@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Globalization;
 using Fcl.Sync.Service.AccessProviders;
 using Microsoft.Extensions.Options;
 
@@ -233,8 +234,8 @@ public sealed class ZKBioClient : IZKBioClient
 
     private static bool Matches(AccessPersonCommand desired, ZKBioPerson current)
     {
-        return Same(desired.Name, current.Name) &&
-               Same(desired.LastName, current.LastName) &&
+        return Same(ZKBioPersonPayload.SanitizeName(desired.Name, desired.Pin), current.Name) &&
+               Same(ZKBioPersonPayload.SanitizeOptionalName(desired.LastName), current.LastName) &&
                Same(desired.DepartmentCode, current.DepartmentCode) &&
                desired.IsDisabled == current.IsDisabled &&
                SameAccessLevels(desired.AccessLevelIds, current.AccessLevelIds) &&
@@ -398,8 +399,8 @@ internal sealed record ZKBioPersonPayload
         return new ZKBioPersonPayload
         {
             Pin = command.Pin,
-            Name = command.Name,
-            LastName = command.LastName,
+            Name = SanitizeName(command.Name, command.Pin),
+            LastName = SanitizeOptionalName(command.LastName),
             AccessLevelIds = command.AccessLevelIds,
             DepartmentCode = command.DepartmentCode,
             IsDisabled = command.IsDisabled,
@@ -407,5 +408,49 @@ internal sealed record ZKBioPersonPayload
             MobilePhone = command.MobilePhone,
             JoinDate = command.JoinDate?.ToString("O")
         };
+    }
+
+    internal static string SanitizeName(string? value, string fallback)
+    {
+        var sanitized = SanitizeOptionalName(value);
+        return string.IsNullOrWhiteSpace(sanitized) ? fallback : sanitized;
+    }
+
+    internal static string? SanitizeOptionalName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var decomposed = value.Normalize(NormalizationForm.FormD);
+        var builder = new StringBuilder(decomposed.Length);
+        var pendingSpace = false;
+
+        foreach (var character in decomposed)
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.NonSpacingMark)
+            {
+                continue;
+            }
+
+            if (char.IsLetterOrDigit(character))
+            {
+                if (pendingSpace && builder.Length > 0)
+                {
+                    builder.Append(' ');
+                }
+
+                builder.Append(character);
+                pendingSpace = false;
+            }
+            else if (char.IsWhiteSpace(character) || char.IsPunctuation(character) || char.IsSymbol(character))
+            {
+                pendingSpace = true;
+            }
+        }
+
+        var result = builder.ToString().Normalize(NormalizationForm.FormC);
+        return result.Length == 0 ? null : result;
     }
 }
